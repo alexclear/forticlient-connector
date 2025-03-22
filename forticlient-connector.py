@@ -155,6 +155,251 @@ def connect_to_vpn():
         log_message("3. Try manually interacting with the window once")
         return None, None
 
+def find_pane_by_criteria(window, pane_id=None, depth=0, max_depth=10):
+    """
+    Find a specific pane in the window hierarchy by ID or recursively explore
+    Returns the pane if found, otherwise None
+    """
+    # Base case for recursion
+    if depth >= max_depth:
+        return None
+        
+    try:
+        # If we're looking for a specific pane
+        if pane_id is not None:
+            try:
+                # Try to find by ID directly
+                pane = window.child_window(best_match=pane_id)
+                if pane.exists():
+                    return pane
+            except:
+                pass
+                
+            # Also try to find by filtering children
+            try:
+                children = window.children()
+                for child in children:
+                    try:
+                        # Check if this is the pane we're looking for
+                        if hasattr(child, 'element_info') and pane_id in str(child.element_info):
+                            return child
+                        # Check auto_id if available
+                        if hasattr(child, 'automation_id') and callable(child.automation_id) and pane_id in child.automation_id():
+                            return child
+                    except:
+                        pass
+            except:
+                pass
+        
+        # Recursive exploration - return list of all panes
+        panes = []
+        try:
+            children = window.children()
+            for child in children:
+                try:
+                    # If it's a pane, add it
+                    if (hasattr(child, 'element_info') and "Pane" in str(child.element_info)) or \
+                       (hasattr(child, 'control_type') and callable(child.control_type) and "Pane" in child.control_type()):
+                        panes.append(child)
+                    
+                    # Also search child's children recursively
+                    child_panes = find_pane_by_criteria(child, pane_id=None, depth=depth+1, max_depth=max_depth)
+                    if child_panes:
+                        panes.extend(child_panes)
+                except:
+                    pass
+        except:
+            pass
+            
+        return panes
+    except Exception as e:
+        log_message(f"Error finding pane: {e}")
+        return None
+
+def explore_pane_hierarchy(window, max_depth=5):
+    """
+    Recursively explore the pane hierarchy
+    Returns information about the pane structure
+    """
+    result = {
+        "texts": [],
+        "buttons": [],
+        "panes": []
+    }
+    
+    def _explore_element(element, depth=0):
+        if depth > max_depth:
+            return
+            
+        try:
+            # Get text from this element
+            try:
+                if hasattr(element, 'window_text') and callable(element.window_text):
+                    text = element.window_text()
+                    if text and text.strip():
+                        result["texts"].append(text.strip())
+            except:
+                pass
+                
+            # Check if it's a button
+            try:
+                if ((hasattr(element, 'control_type') and callable(element.control_type) and "button" in element.control_type().lower()) or
+                    (hasattr(element, 'element_info') and "button" in str(element.element_info).lower())):
+                    # It's a button - save info about it
+                    button_text = element.window_text() if hasattr(element, 'window_text') and callable(element.window_text) else ""
+                    if button_text:
+                        result["buttons"].append({
+                            "text": button_text,
+                            "enabled": element.is_enabled() if hasattr(element, 'is_enabled') and callable(element.is_enabled) else False
+                        })
+            except:
+                pass
+                
+            # Check if it's a pane
+            try:
+                if ((hasattr(element, 'control_type') and callable(element.control_type) and "pane" in element.control_type().lower()) or
+                    (hasattr(element, 'element_info') and "pane" in str(element.element_info).lower())):
+                    # Save info about the pane
+                    pane_id = None
+                    try:
+                        if hasattr(element, 'automation_id') and callable(element.automation_id):
+                            pane_id = element.automation_id()
+                    except:
+                        pass
+                        
+                    if not pane_id and hasattr(element, 'element_info'):
+                        # Try to extract from element_info
+                        info_str = str(element.element_info)
+                        if 'Pane' in info_str:
+                            pane_matches = re.findall(r'Pane\d+', info_str)
+                            if pane_matches:
+                                pane_id = pane_matches[0]
+                                
+                    if pane_id:
+                        result["panes"].append(pane_id)
+            except:
+                pass
+                
+            # Explore children
+            try:
+                if hasattr(element, 'children') and callable(element.children):
+                    for child in element.children():
+                        _explore_element(child, depth + 1)
+            except:
+                pass
+                
+        except Exception as e:
+            if DEBUG_UI_INFO:
+                log_message(f"Error exploring element: {e}")
+    
+    # Start exploration
+    _explore_element(window)
+    return result
+
+def find_content_pane(window):
+    """Find the main content pane where VPN status information is likely to be"""
+    # First, try to find Pane8 directly
+    pane8 = None
+    try:
+        # Method 1: Direct approach
+        pane8 = window.child_window(best_match="Pane8")
+        if pane8.exists():
+            log_message("Found Pane8 directly")
+            return pane8
+    except Exception as e:
+        if DEBUG_UI_INFO:
+            log_message(f"Error finding Pane8 directly: {e}")
+    
+    # Method 2: Try to navigate through the hierarchy
+    try:
+        # Get control identifiers to guide our search
+        identifiers_text = ""
+        import io
+        from contextlib import redirect_stdout
+        
+        f = io.StringIO()
+        with redirect_stdout(f):
+            window.print_control_identifiers()
+        identifiers_text = f.getvalue()
+        
+        # Look for the path to Pane8
+        if "Pane8" in identifiers_text:
+            # Typical path is Pane -> Pane3 -> Pane4 -> Pane5 -> Pane6 -> Pane8
+            # Let's trace through it
+            try:
+                pane_collection = window.children()
+                # Find Pane3
+                for pane in pane_collection:
+                    try:
+                        if hasattr(pane, 'element_info') and "Pane3" in str(pane.element_info):
+                            # Found Pane3, now look for Pane4
+                            pane3 = pane
+                            for subpane in pane3.children():
+                                if hasattr(subpane, 'element_info') and "Pane4" in str(subpane.element_info):
+                                    # Next Pane5
+                                    pane4 = subpane
+                                    for subsubpane in pane4.children():
+                                        if hasattr(subsubpane, 'element_info') and "Pane5" in str(subsubpane.element_info):
+                                            # Next Pane6
+                                            pane5 = subsubpane
+                                            for p6 in pane5.children():
+                                                if hasattr(p6, 'element_info') and "Pane6" in str(p6.element_info):
+                                                    # Finally Pane8
+                                                    pane6 = p6
+                                                    for p8 in pane6.children():
+                                                        if hasattr(p8, 'element_info') and "Pane8" in str(p8.element_info):
+                                                            pane8 = p8
+                                                            log_message("Found Pane8 through hierarchy navigation")
+                                                            return pane8
+                    except:
+                        continue
+            except Exception as e:
+                if DEBUG_UI_INFO:
+                    log_message(f"Error navigating through pane hierarchy: {e}")
+    except:
+        pass
+    
+    # Method 3: Recursive search for Pane8
+    try:
+        pane8 = find_pane_by_criteria(window, pane_id="Pane8")
+        if pane8:
+            log_message("Found Pane8 through recursive search")
+            return pane8
+    except:
+        pass
+    
+    # Method 4: As fallback, find any pane that might contain VPN info
+    try:
+        # Look for children with VPN-related text
+        panes = find_pane_by_criteria(window)
+        for pane in panes:
+            try:
+                text = pane.window_text() if hasattr(pane, 'window_text') and callable(pane.window_text) else ""
+                if "VPN" in text or "connect" in text.lower() or "disconnect" in text.lower():
+                    log_message(f"Found potential VPN content pane with text: {text[:30]}...")
+                    return pane
+            except:
+                pass
+            
+            # Also check children's text
+            try:
+                for child in pane.children():
+                    try:
+                        child_text = child.window_text() if hasattr(child, 'window_text') and callable(child.window_text) else ""
+                        if "VPN" in child_text or "connect" in child_text.lower() or "disconnect" in child_text.lower():
+                            log_message(f"Found potential VPN content pane with child text: {child_text[:30]}...")
+                            return pane
+                    except:
+                        pass
+            except:
+                pass
+    except:
+        pass
+        
+    # If all else fails, return the main window to use standard methods
+    log_message("Could not find content pane, using main window")
+    return window
+
 def find_connect_button(window):
     """Use multiple methods to find the Connect button"""
     # Method 1: Standard approach
@@ -241,6 +486,30 @@ def find_connect_button(window):
                 pass
     except Exception as e:
         log_message(f"Error in deep search: {e}")
+    
+    # Method 6: Try to find the content pane first, then look in it
+    try:
+        content_pane = find_content_pane(window)
+        if content_pane and content_pane != window:
+            log_message("Searching for Connect button in content pane")
+            # Now search within the content pane using same methods
+            try:
+                connect_button = content_pane.child_window(title="Connect", control_type="Button")
+                if connect_button.exists():
+                    return connect_button
+            except:
+                pass
+                
+            # Try with descendants
+            if hasattr(content_pane, 'descendants'):
+                for elem in content_pane.descendants():
+                    try:
+                        if elem.window_text() == "Connect" and "Button" in str(type(elem)):
+                            return elem
+                    except:
+                        pass
+    except:
+        pass
     
     return None
 
@@ -331,6 +600,30 @@ def find_disconnect_button(window):
     except Exception as e:
         log_message(f"Error in deep search: {e}")
     
+    # Method 6: Try to find the content pane first, then look in it
+    try:
+        content_pane = find_content_pane(window)
+        if content_pane and content_pane != window:
+            log_message("Searching for Disconnect button in content pane")
+            # Now search within the content pane using same methods
+            try:
+                disconnect_button = content_pane.child_window(title="Disconnect", control_type="Button")
+                if disconnect_button.exists():
+                    return disconnect_button
+            except:
+                pass
+                
+            # Try with descendants
+            if hasattr(content_pane, 'descendants'):
+                for elem in content_pane.descendants():
+                    try:
+                        if elem.window_text() == "Disconnect" and "Button" in str(type(elem)):
+                            return elem
+                    except:
+                        pass
+    except:
+        pass
+    
     return None
 
 def identify_vpn_state(window):
@@ -347,48 +640,75 @@ def identify_vpn_state(window):
         "details": ""
     }
     
-    # First, get full window text to analyze
-    full_text = get_window_full_text(window)
+    # First, try to look in the content pane specifically
+    content_pane = find_content_pane(window)
     
-    # Method 1: Use control identifiers to get a more complete view
-    try:
-        identifiers_text = ""
-        import io
-        from contextlib import redirect_stdout
-        
-        f = io.StringIO()
-        with redirect_stdout(f):
-            window.print_control_identifiers()
-        identifiers_text = f.getvalue()
-        log_message("Control Identifiers output captured for analysis")
-        
-        # Add the identifiers text to our full text for analysis
-        full_text += " " + identifiers_text
-    except Exception as e:
-        log_message(f"Error capturing control identifiers: {e}")
+    # Explore the pane hierarchy to gather information
+    hierarchy_info = explore_pane_hierarchy(content_pane if content_pane else window)
     
-    # Method 2: Check for the presence of buttons
-    disconnect_button = find_disconnect_button(window)
-    connect_button = find_connect_button(window)
+    # Log what we found for debugging
+    if DEBUG_UI_INFO:
+        log_message(f"Found {len(hierarchy_info['texts'])} text elements in pane hierarchy")
+        log_message(f"Found {len(hierarchy_info['buttons'])} buttons in pane hierarchy")
+        if hierarchy_info['texts']:
+            log_message(f"First few texts: {hierarchy_info['texts'][:3]}")
+        if hierarchy_info['buttons']:
+            button_texts = [b['text'] for b in hierarchy_info['buttons']]
+            log_message(f"Button texts: {button_texts}")
     
-    disconnect_exists = disconnect_button is not None
-    connect_exists = connect_button is not None
+    # Add all the text from the pane exploration to our analysis
+    full_text = " ".join(hierarchy_info['texts'])
     
-    if disconnect_exists:
+    # Also check for buttons specifically
+    disconnect_button_found = False
+    disconnect_button_enabled = False
+    connect_button_found = False
+    connect_button_enabled = False
+    
+    for button in hierarchy_info['buttons']:
+        if button['text'] == "Disconnect":
+            disconnect_button_found = True
+            disconnect_button_enabled = button['enabled']
+        elif button['text'] == "Connect":
+            connect_button_found = True
+            connect_button_enabled = button['enabled']
+    
+    # If we didn't find buttons in hierarchy exploration, try direct methods
+    if not (disconnect_button_found or connect_button_found):
+        # Method 1: Use control identifiers to get a more complete view
         try:
-            disconnect_enabled = disconnect_button.is_enabled()
-        except:
-            disconnect_enabled = False
-    else:
-        disconnect_enabled = False
+            identifiers_text = ""
+            import io
+            from contextlib import redirect_stdout
+            
+            f = io.StringIO()
+            with redirect_stdout(f):
+                window.print_control_identifiers()
+            identifiers_text = f.getvalue()
+            
+            # Add the identifiers text to our full text for analysis
+            full_text += " " + identifiers_text
+        except Exception as e:
+            log_message(f"Error capturing control identifiers: {e}")
         
-    if connect_exists:
-        try:
-            connect_enabled = connect_button.is_enabled()
-        except:
-            connect_enabled = False
-    else:
-        connect_enabled = False
+        # Method 2: Check for the presence of buttons
+        disconnect_button = find_disconnect_button(window)
+        connect_button = find_connect_button(window)
+        
+        disconnect_button_found = disconnect_button is not None
+        connect_button_found = connect_button is not None
+        
+        if disconnect_button_found:
+            try:
+                disconnect_button_enabled = disconnect_button.is_enabled()
+            except:
+                disconnect_button_enabled = False
+        
+        if connect_button_found:
+            try:
+                connect_button_enabled = connect_button.is_enabled()
+            except:
+                connect_button_enabled = False
     
     # Method 3: Analyze the window text for status indicators
     connected_indicators = [
@@ -417,12 +737,18 @@ def identify_vpn_state(window):
         if indicator in full_text:
             found_disconnected.append(indicator)
     
+    # Add the button states to our lists if we found them directly
+    if disconnect_button_found and not "Disconnect" in found_connected:
+        found_connected.append("Disconnect")
+    if connect_button_found and not "Connect" in found_disconnected:
+        found_disconnected.append("Connect")
+    
     # Analyze all the evidence to determine state
-    if disconnect_exists and disconnect_enabled:
+    if disconnect_button_found and disconnect_button_enabled:
         result["identified"] = True
         result["status"] = "connected"
         result["details"] = "Disconnect button found and enabled"
-    elif connect_exists and connect_enabled:
+    elif connect_button_found and connect_button_enabled:
         result["identified"] = True
         result["status"] = "disconnected"
         result["details"] = "Connect button found and enabled"
@@ -434,6 +760,14 @@ def identify_vpn_state(window):
         result["identified"] = True
         result["status"] = "disconnected"
         result["details"] = f"Text indicators suggest disconnected: {', '.join(found_disconnected)}"
+    elif "VPN Connected" in full_text:  # Special case for the most explicit indicator
+        result["identified"] = True
+        result["status"] = "connected"
+        result["details"] = "Found explicit 'VPN Connected' text"
+    elif content_pane:  # If we found a content pane but couldn't identify state, log for debugging
+        result["details"] = f"Content pane found but status unclear"
+        if DEBUG_UI_INFO:
+            log_message(f"Content pane text: {full_text[:100]}...")
     
     return result
 
