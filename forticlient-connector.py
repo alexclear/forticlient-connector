@@ -16,6 +16,16 @@ def connect_to_vpn():
         main_window = app.window(title_re="FortiClient.*")
         print("Main window retrieved.")
 
+        # Check if already connected
+        try:
+            disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
+            if disconnect_button.exists() and disconnect_button.is_enabled():
+                print("VPN is already connected")
+                print("VPN connection check completed")
+                return app, main_window
+        except Exception as e:
+            print(f"Error checking connection status: {e}")
+
         # Click the Connect button
         print("Attempting to click the Connect button...")
         connect_button = main_window.child_window(title="Connect", control_type="Button")
