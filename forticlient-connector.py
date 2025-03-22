@@ -17,10 +17,10 @@ def connect_to_vpn():
         for _ in range(3):  # Retry up to 3 times
             try:
                 main_window = app.window(title="FortiClient")
-                main_window.wait('visible', timeout=10)  # Wait up to 10 seconds for window
                 print("Main window retrieved.")
                 main_window.restore()
                 main_window.set_focus()
+                main_window.wait('visible', timeout=10)  # Wait up to 10 seconds for window
                 break
             except Exception as window_error:
                 print(f"Error getting window (attempt {_+1}/3): {window_error}")
