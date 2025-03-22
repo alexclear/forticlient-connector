@@ -148,21 +148,58 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
             if not need_to_set_focus:
                 try:
                     # First check for Disconnect button indicating connection
-                    disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
-                    if disconnect_button.exists():
-                        print("VPN connection is active (checked without focus)")
-                    else:
-                        # Check Connect button if Disconnect isn't present
-                        connect_button = main_window.child_window(title="Connect", control_type="Button")
-                        if connect_button.exists() and connect_button.is_enabled():
-                            print("VPN appears to be disconnected. Need to reconnect...")
-                            need_to_click_connect = True
-                            need_to_set_focus = True  # Need focus to click
+                    disconnect_button_exists = False
+                    connect_button_exists = False
+                    disconnect_button_enabled = False
+                    connect_button_enabled = False
+
+                    try:
+                        disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
+                        disconnect_button_exists = disconnect_button.exists()
+                        if disconnect_button_exists:
+                            disconnect_button_enabled = disconnect_button.is_enabled()
+                            print(f"Disconnect button state: exists={disconnect_button_exists}, enabled={disconnect_button_enabled}")
                         else:
-                            print("VPN status unclear (without focus), possibly connecting...")
-                            need_to_set_focus = True  # Need focus to verify
+                            print("Disconnect button not found (without focus)")
+                    except Exception as disc_err:
+                        print(f"Error checking Disconnect button: {disc_err}")
+
+                    try:
+                        connect_button = main_window.child_window(title="Connect", control_type="Button")
+                        connect_button_exists = connect_button.exists()
+                        if connect_button_exists:
+                            connect_button_enabled = connect_button.is_enabled()
+                            print(f"Connect button state: exists={connect_button_exists}, enabled={connect_button_enabled}")
+                        else:
+                            print("Connect button not found (without focus)")
+                    except Exception as conn_err:
+                        print(f"Error checking Connect button: {conn_err}")
+
+                    # Determine status based on button states
+                    if disconnect_button_exists and disconnect_button_enabled:
+                        print("VPN connection is active (checked without focus)")
+                    elif connect_button_exists and connect_button_enabled:
+                        print("VPN appears to be disconnected. Need to reconnect...")
+                        need_to_click_connect = True
+                        need_to_set_focus = True  # Need focus to click
+                    else:
+                        # More detailed diagnostics for unclear status
+                        status_details = []
+                        if disconnect_button_exists and not disconnect_button_enabled:
+                            status_details.append("Disconnect button exists but is disabled")
+                        if connect_button_exists and not connect_button_enabled:
+                            status_details.append("Connect button exists but is disabled")
+                        if not disconnect_button_exists and not connect_button_exists:
+                            status_details.append("Neither Connect nor Disconnect buttons found")
+
+                        if not status_details:
+                            status_details.append("Unknown UI state")
+
+                        print(f"VPN status unclear (without focus): {', '.join(status_details)}")
+                        need_to_set_focus = True  # Need focus to verify
                 except Exception as e:
                     print(f"Non-focused status check failed: {e}")
+                    print(f"Error type: {type(e).__name__}, detailed error info: {str(e)}")
                     need_to_set_focus = True  # Exception means we need focus to verify
 
             # Only set focus if we determined it's necessary
@@ -173,24 +210,55 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
 
                 # Check status again with focus
                 try:
-                    disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
-                    if disconnect_button.exists():
-                        print("VPN connection is active (confirmed with focus)")
-                    else:
+                    disconnect_button_exists = False
+                    connect_button_exists = False
+
+                    try:
+                        disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
+                        disconnect_button_exists = disconnect_button.exists()
+                        disconnect_button_enabled = disconnect_button.is_enabled() if disconnect_button_exists else False
+                        print(f"With focus - Disconnect button state: exists={disconnect_button_exists}, enabled={disconnect_button_enabled}")
+                    except Exception as disc_err:
+                        print(f"With focus - Error checking Disconnect button: {disc_err}")
+
+                    try:
                         connect_button = main_window.child_window(title="Connect", control_type="Button")
-                        if connect_button.exists() and connect_button.is_enabled():
-                            print("Clicking Connect button to establish VPN connection...")
-                            connect_button.click()
-                            print("Reconnect attempt initiated")
-                        else:
-                            print("VPN status is unclear, possibly connecting...")
+                        connect_button_exists = connect_button.exists()
+                        connect_button_enabled = connect_button.is_enabled() if connect_button_exists else False
+                        print(f"With focus - Connect button state: exists={connect_button_exists}, enabled={connect_button_enabled}")
+                    except Exception as conn_err:
+                        print(f"With focus - Error checking Connect button: {conn_err}")
+
+                    if disconnect_button_exists and disconnect_button_enabled:
+                        print("VPN connection is active (confirmed with focus)")
+                    elif connect_button_exists and connect_button_enabled:
+                        print("Clicking Connect button to establish VPN connection...")
+                        connect_button.click()
+                        print("Reconnect attempt initiated")
+                    else:
+                        # More detailed diagnostics
+                        status_details = []
+                        if disconnect_button_exists and not disconnect_button_enabled:
+                            status_details.append("Disconnect button exists but is disabled")
+                        if connect_button_exists and not connect_button_enabled:
+                            status_details.append("Connect button exists but is disabled")
+                        if not disconnect_button_exists and not connect_button_exists:
+                            status_details.append("Neither Connect nor Disconnect buttons found")
+
+                        if not status_details:
+                            status_details.append("Unknown UI state")
+
+                        print(f"VPN status unclear (with focus): {', '.join(status_details)}")
                 except Exception as focused_error:
                     print(f"Error checking status with focus: {focused_error}")
+                    print(f"Error type: {type(focused_error).__name__}, detailed error: {str(focused_error)}")
 
             time.sleep(check_interval)
 
         except Exception as e:
             print(f"Error in monitoring: {e}")
+            print(f"Error type: {type(e).__name__}, traceback:")
+            traceback.print_exc()
             # If we lost connection to the FortiClient window, try to reconnect
             try:
                 print("Attempting to reconnect to FortiClient application...")
