@@ -145,23 +145,79 @@ def dump_window_info(window):
     log_message("--- Window Debug Information ---")
     try:
         log_message(f"Window title: {window.window_text()}")
-        log_message(f"Control type: {window.control_type() if hasattr(window, 'control_type') else 'Unknown'}")
-        log_message(f"Rectangle: {window.rectangle() if hasattr(window, 'rectangle') else 'Unknown'}")
-        log_message(f"Visible: {window.is_visible() if hasattr(window, 'is_visible') else 'Unknown'}")
+        
+        # Safely get properties using getattr with defaults
+        try:
+            control_type = "Unknown"
+            if hasattr(window, 'control_type'):
+                if callable(getattr(window, 'control_type')):
+                    control_type = window.control_type()
+                else:
+                    control_type = getattr(window, 'control_type', "Unknown")
+            log_message(f"Control type: {control_type}")
+        except Exception as e:
+            log_message(f"Error getting control type: {e}")
+            
+        try:
+            rectangle = "Unknown"
+            if hasattr(window, 'rectangle'):
+                if callable(getattr(window, 'rectangle')):
+                    rectangle = window.rectangle()
+                else:
+                    rectangle = getattr(window, 'rectangle', "Unknown")
+            log_message(f"Rectangle: {rectangle}")
+        except Exception as e:
+            log_message(f"Error getting rectangle: {e}")
+            
+        try:
+            visible = "Unknown"
+            if hasattr(window, 'is_visible'):
+                if callable(getattr(window, 'is_visible')):
+                    visible = window.is_visible()
+                else:
+                    visible = getattr(window, 'is_visible', "Unknown")
+            log_message(f"Visible: {visible}")
+        except Exception as e:
+            log_message(f"Error getting visibility: {e}")
 
         log_message("Child controls:")
         try:
-            all_children = window.children()
-            for idx, child in enumerate(all_children):
-                try:
-                    control_type = child.control_type() if hasattr(child, 'control_type') else 'Unknown'
-                    text = child.window_text() if hasattr(child, 'window_text') else 'No text'
-                    visible = child.is_visible() if hasattr(child, 'is_visible') else 'Unknown'
-                    log_message(f"  {idx}: {control_type} - '{text}' (visible: {visible})")
-                except Exception as e:
-                    log_message(f"  {idx}: Error getting info: {e}")
-        except Exception as e:
-            log_message(f"Error enumerating children: {e}")
+            if hasattr(window, 'children') and callable(window.children):
+                all_children = window.children()
+                if not all_children:
+                    log_message("  No children found")
+                else:
+                    for idx, child in enumerate(all_children):
+                        try:
+                            # Safely get child info
+                            child_type = "Unknown"
+                            try:
+                                if hasattr(child, 'control_type') and callable(getattr(child, 'control_type')):
+                                    child_type = child.control_type()
+                            except:
+                                pass
+                                
+                            child_text = "No text"
+                            try:
+                                if hasattr(child, 'window_text') and callable(getattr(child, 'window_text')):
+                                    child_text = child.window_text()
+                            except:
+                                pass
+                                
+                            child_visible = "Unknown"
+                            try:
+                                if hasattr(child, 'is_visible') and callable(getattr(child, 'is_visible')):
+                                    child_visible = child.is_visible()
+                            except:
+                                pass
+                                
+                            log_message(f"  {idx}: {child_type} - '{child_text}' (visible: {child_visible})")
+                        except Exception as child_err:
+                            log_message(f"  {idx}: Error getting info: {child_err}")
+            else:
+                log_message("  Children property not available or not callable")
+        except Exception as children_err:
+            log_message(f"Error enumerating children: {children_err}")
     except Exception as e:
         log_message(f"Error dumping window info: {e}")
     log_message("--- End Window Debug Information ---")
