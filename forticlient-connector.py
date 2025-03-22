@@ -1480,8 +1480,8 @@ if __name__ == "__main__":
         main_window.set_focus()
         time.sleep(1)
         
-        if not move_window_offscreen(main_window):
-            log_message("WARNING: Failed to move window off-screen, continuing anyway")
+        #if not move_window_offscreen(main_window):
+        #    log_message("WARNING: Failed to move window off-screen, continuing anyway")
             
         # Start monitoring after initial connection
         monitor_vpn_connection(app, main_window)
