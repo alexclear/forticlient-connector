@@ -17,6 +17,7 @@ def connect_to_vpn():
         print("Main window retrieved.")
 
         main_window.restore()
+        main_window.set_focus()
 
         # Check if already connected
         try:
