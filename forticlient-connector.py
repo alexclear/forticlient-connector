@@ -9,6 +9,7 @@ import re
 ALWAYS_SET_FOCUS = False  # Set to True if elements are consistently not found without focus
 DEBUG_UI_INFO = True      # Set to True for additional UI debugging information
 USE_TEXT_DETECTION = True # Use text content analysis for status detection
+CACHE_DURATION = 30      # How long to trust cached status (seconds)
 
 def get_timestamp():
     """Return a formatted timestamp string in [MM/DD/YYYY HH:MM:SSam/pm] format"""
@@ -273,10 +274,22 @@ def find_button_in_text(window, button_text):
 
     return button_found, button_enabled
 
-def get_window_full_text(window):
+def get_window_full_text(window, with_focus=False):
     """Extract all text from window and its children"""
-    full_text = window.window_text() if hasattr(window, 'window_text') else ""
+    texts = []
     
+    # Try multiple methods to get text content
+    try:
+        # Method 1: Direct window text
+        if hasattr(window, 'window_text') and callable(window.window_text):
+            window_text = window.window_text()
+            if window_text:
+                texts.append(window_text)
+    except Exception as e:
+        if DEBUG_UI_INFO:
+            log_message(f"Error getting window text: {e}")
+
+    # Method 2: Get text from all child elements
     try:
         if hasattr(window, 'children') and callable(window.children):
             for child in window.children():
@@ -284,22 +297,53 @@ def get_window_full_text(window):
                     if hasattr(child, 'window_text') and callable(child.window_text):
                         child_text = child.window_text()
                         if child_text:
-                            full_text += " " + child_text
-                except:
-                    pass
-                
-                # Also get text from descendants if available
-                try:
-                    if hasattr(child, 'descendants') and callable(child.descendants):
-                        for desc in child.descendants():
-                            if hasattr(desc, 'window_text') and callable(desc.window_text):
-                                desc_text = desc.window_text()
-                                if desc_text:
-                                    full_text += " " + desc_text
+                            texts.append(child_text)
+
+                    # For blank children with children of their own (common in some UIs)
+                    if hasattr(child, 'children') and callable(child.children):
+                        for grandchild in child.children():
+                            try:
+                                if hasattr(grandchild, 'window_text') and callable(grandchild.window_text):
+                                    gc_text = grandchild.window_text()
+                                    if gc_text:
+                                        texts.append(gc_text)
+                            except:
+                                pass
                 except:
                     pass
     except Exception as e:
-        log_message(f"Error getting full window text: {e}")
+        if DEBUG_UI_INFO:
+            log_message(f"Error getting child texts: {e}")
+
+    # Method 3: Use descendants() if available (gets all nested elements)
+    try:
+        if hasattr(window, 'descendants') and callable(window.descendants):
+            for desc in window.descendants():
+                try:
+                    if hasattr(desc, 'window_text') and callable(desc.window_text):
+                        desc_text = desc.window_text()
+                        if desc_text:
+                            texts.append(desc_text)
+                except:
+                    pass
+    except Exception as e:
+        if DEBUG_UI_INFO:
+            log_message(f"Error getting descendant texts: {e}")
+
+    # Method 4: Try to get printable_tree if available (used by pywinauto for debugging)
+    try:
+        if hasattr(window, 'print_control_identifiers'):
+            tree_text = str(window.print_control_identifiers())
+            if tree_text:
+                texts.append(tree_text)
+    except:
+        pass
+
+    # Combine all the text we found
+    full_text = " ".join(texts)
+    
+    if DEBUG_UI_INFO and not full_text and not with_focus:
+        log_message("WARNING: No text content extracted from window. Text detection may fail.")
     
     return full_text
 
@@ -307,35 +351,37 @@ def analyze_vpn_status_from_text(text):
     """Analyze window text to determine VPN status"""
     if not text:
         return None, "No window text found"
-    
+
     # Positive indicators that VPN is connected
     connected_indicators = [
         "VPN Connected",
-        "Disconnect",  # Disconnect button present
-        "Duration",    # Duration field indicates active connection
+        "Disconnect",       # Disconnect button present
+        "Duration",         # Duration field indicates active connection
         "Bytes Received", 
-        "Bytes Sent"
+        "Bytes Sent",
+        "IP Address",       # Connected VPNs typically show the assigned IP
+        "Username"          # Connected VPNs typically show the username
     ]
-    
+
     # Indicators that VPN is disconnected
     disconnected_indicators = [
         "Not Connected",
         "VPN Disconnected",
-        "Connect"  # Connect button present
+        "Connect"           # Connect button present
     ]
-    
+
     # Check for connection indicators
     found_connected = []
     for indicator in connected_indicators:
         if indicator in text:
             found_connected.append(indicator)
-            
+
     # Check for disconnection indicators
     found_disconnected = []
     for indicator in disconnected_indicators:
         if indicator in text:
             found_disconnected.append(indicator)
-    
+
     # Analyze findings
     if found_connected and not found_disconnected:
         return True, f"Connected - indicators found: {', '.join(found_connected)}"
@@ -344,7 +390,12 @@ def analyze_vpn_status_from_text(text):
     elif found_connected and found_disconnected:
         # If both types of indicators are found, prioritize connected ones
         # This is because "Connect" might appear in the UI even when connected
-        if len(found_connected) > 1 or "VPN Connected" in found_connected:
+        
+        # Strong indicators of connection
+        strong_indicators = ["VPN Connected", "Duration", "Bytes Received", "IP Address", "Username"]
+        found_strong = [i for i in strong_indicators if i in found_connected]
+        
+        if found_strong:
             return True, f"Likely connected despite mixed indicators: connected={found_connected}, disconnected={found_disconnected}"
         else:
             return None, f"Ambiguous status: connected={found_connected}, disconnected={found_disconnected}"
@@ -361,6 +412,11 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
     log_message(f"Starting VPN connection monitoring. Checking every {check_interval} seconds...")
     consecutive_focus_needed = 0
     max_consecutive_focus = 3  # After this many failures, always use focus
+    
+    # Status caching to reduce focus operations
+    last_known_status = None  # None=unknown, True=connected, False=disconnected
+    last_status_time = 0
+    last_status_with_focus = False  # Whether the last status check required focus
 
     while True:
         try:
@@ -370,6 +426,15 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
             # First, check if window is minimized - this requires restoration
             need_to_set_focus = ALWAYS_SET_FOCUS  # Use the global setting
             need_to_click_connect = False
+
+            # Check if we can use cached status
+            current_time = time.time()
+            status_age = current_time - last_status_time
+            
+            if last_known_status is True and status_age < CACHE_DURATION:
+                log_message(f"Using cached VPN status (connected, age: {int(status_age)}s)")
+                time.sleep(check_interval)
+                continue
 
             if hasattr(main_window, 'is_minimized') and main_window.is_minimized():
                 log_message("Window is minimized, restoring for status check...")
@@ -394,12 +459,20 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                             log_message(f"Text analysis indicates VPN is connected: {text_details}")
                             log_message("VPN connection is active (text analysis without focus)")
                             consecutive_focus_needed = 0  # Reset counter
+                            # Update cache
+                            last_known_status = True
+                            last_status_time = current_time
+                            last_status_with_focus = False
                             time.sleep(check_interval)
                             continue
                         elif text_status is False:
                             log_message(f"Text analysis indicates VPN is disconnected: {text_details}")
                             need_to_click_connect = True
                             need_to_set_focus = True  # Need focus to click connect
+                            # Update cache
+                            last_known_status = False
+                            last_status_time = current_time
+                            last_status_with_focus = False
                         else:
                             log_message(f"Text analysis is inconclusive: {text_details}")
                             # Fall through to button detection
@@ -465,11 +538,19 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                     if disconnect_button_exists and disconnect_button_enabled:
                         log_message("VPN connection is active (checked without focus)")
                         consecutive_focus_needed = 0  # Reset counter on success
+                        # Update cache
+                        last_known_status = True
+                        last_status_time = current_time
+                        last_status_with_focus = False
                     elif connect_button_exists and connect_button_enabled:
                         log_message("VPN appears to be disconnected. Need to reconnect...")
                         need_to_click_connect = True
                         need_to_set_focus = True  # Need focus to click
                         consecutive_focus_needed = 0  # Reset counter as we found something
+                        # Update cache
+                        last_known_status = False
+                        last_status_time = current_time
+                        last_status_with_focus = False
                     else:
                         # More detailed diagnostics for unclear status
                         status_details = []
@@ -492,6 +573,8 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                         if consecutive_focus_needed >= max_consecutive_focus and not ALWAYS_SET_FOCUS:
                             log_message("Setting ALWAYS_SET_FOCUS=True due to consistent focus requirements")
                             ALWAYS_SET_FOCUS = True
+                            
+                        # Don't update cache for unclear status
                 except Exception as e:
                     log_message(f"Non-focused status check failed: {e}")
                     log_message(f"Error type: {type(e).__name__}, detailed error info: {str(e)}")
@@ -509,14 +592,22 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
 
                 # First try text-based detection with focus
                 if USE_TEXT_DETECTION:
-                    full_text = get_window_full_text(main_window)
+                    full_text = get_window_full_text(main_window, with_focus=True)
                     text_status, text_details = analyze_vpn_status_from_text(full_text)
                     
                     if text_status is True:
                         log_message(f"With focus - Text analysis indicates VPN is connected: {text_details}")
+                        # Update cache
+                        last_known_status = True
+                        last_status_time = current_time
+                        last_status_with_focus = True
                     elif text_status is False:
                         log_message(f"With focus - Text analysis indicates VPN is disconnected: {text_details}")
                         need_to_click_connect = True
+                        # Update cache
+                        last_known_status = False
+                        last_status_time = current_time
+                        last_status_with_focus = True
                     else:
                         log_message(f"With focus - Text analysis is inconclusive: {text_details}")
 
@@ -558,14 +649,26 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                     # Determine final state and take action
                     if disconnect_button_exists and disconnect_button_enabled:
                         log_message("VPN connection is active (confirmed with focus)")
+                        # Update cache
+                        last_known_status = True
+                        last_status_time = current_time
+                        last_status_with_focus = True
                     elif connect_button_exists and connect_button_enabled and connect_button is not None:
                         log_message("Clicking Connect button to establish VPN connection...")
                         connect_button.click()
                         log_message("Reconnect attempt initiated")
+                        # Reset cache - status will be checked next time
+                        last_known_status = None
+                        last_status_time = 0
                     elif text_status is True:  # Use text analysis result if button detection failed
                         log_message("VPN appears connected based on window text analysis")
+                        # Update cache
+                        last_known_status = True
+                        last_status_time = current_time
+                        last_status_with_focus = True
                     elif text_status is False and need_to_click_connect:
                         log_message("VPN appears disconnected based on text analysis, but couldn't find a clickable Connect button")
+                        # Don't update cache in this case - we're in an odd state
                     else:
                         # More detailed diagnostics
                         status_details = []
@@ -580,6 +683,7 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                             status_details.append("Unknown UI state")
 
                         log_message(f"VPN status unclear (with focus): {', '.join(status_details)}")
+                        # Don't update cache for unclear status
                 except Exception as focused_error:
                     log_message(f"Error checking status with focus: {focused_error}")
                     log_message(f"Error type: {type(focused_error).__name__}, detailed error: {str(focused_error)}")
@@ -605,6 +709,10 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
 
                 main_window = app.window(title_re="FortiClient.*", visible_only=False)
                 log_message("Reconnected to FortiClient window")
+                
+                # Reset cache after reconnection
+                last_known_status = None
+                last_status_time = 0
             except Exception as reconnect_error:
                 log_message(f"Failed to reconnect to FortiClient window: {reconnect_error}")
                 log_message(f"Will retry in {check_interval} seconds...")
