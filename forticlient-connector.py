@@ -463,87 +463,13 @@ def explore_pane_hierarchy(window, max_depth=5):
 
 def find_content_pane(window):
     """Find the main content pane where VPN status information is likely to be"""
-    # First, try to find Pane8 directly
-    pane8 = None
+    # Look for panes with VPN-related content
     try:
-        # Method 1: Direct approach
-        pane8 = window.child_window(best_match="Pane8")
-        if pane8.exists():
-            log_message("Found Pane8 directly")
-            # Check if it has valid content
-            if hasattr(pane8, 'descendants'):
-                desc_count = len(list(pane8.descendants()))
-                if desc_count == 0:
-                    log_message("Warning: Pane8 has no descendants, may be empty")
-            return pane8
-    except Exception as e:
-        if DEBUG_UI_INFO:
-            log_message(f"Error finding Pane8 directly: {e}")
-    
-    # Method 2: Try to navigate through the hierarchy
-    try:
-        # Get control identifiers to guide our search
-        identifiers_text = ""
-        import io
-        from contextlib import redirect_stdout
-        
-        f = io.StringIO()
-        with redirect_stdout(f):
-            window.print_control_identifiers()
-        identifiers_text = f.getvalue()
-        
-        # Look for the path to Pane8
-        if "Pane8" in identifiers_text:
-            # Typical path is Pane -> Pane3 -> Pane4 -> Pane5 -> Pane6 -> Pane8
-            # Let's trace through it
-            try:
-                pane_collection = window.children()
-                # Find Pane3
-                for pane in pane_collection:
-                    try:
-                        if hasattr(pane, 'element_info') and "Pane3" in str(pane.element_info):
-                            # Found Pane3, now look for Pane4
-                            pane3 = pane
-                            for subpane in pane3.children():
-                                if hasattr(subpane, 'element_info') and "Pane4" in str(subpane.element_info):
-                                    # Next Pane5
-                                    pane4 = subpane
-                                    for subsubpane in pane4.children():
-                                        if hasattr(subsubpane, 'element_info') and "Pane5" in str(subsubpane.element_info):
-                                            # Next Pane6
-                                            pane5 = subsubpane
-                                            for p6 in pane5.children():
-                                                if hasattr(p6, 'element_info') and "Pane6" in str(p6.element_info):
-                                                    # Finally Pane8
-                                                    pane6 = p6
-                                                    for p8 in pane6.children():
-                                                        if hasattr(p8, 'element_info') and "Pane8" in str(p8.element_info):
-                                                            pane8 = p8
-                                                            log_message("Found Pane8 through hierarchy navigation")
-                                                            return pane8
-                    except:
-                        continue
-            except Exception as e:
-                if DEBUG_UI_INFO:
-                    log_message(f"Error navigating through pane hierarchy: {e}")
-    except:
-        pass
-    
-    # Method 3: Recursive search for Pane8
-    try:
-        pane8 = find_pane_by_criteria(window, pane_id="Pane8")
-        if pane8:
-            log_message("Found Pane8 through recursive search")
-            return pane8
-    except:
-        pass
-    
-    # Method 4: As fallback, find any pane that might contain VPN info
-    try:
-        # Look for children with VPN-related text
+        # Method 1: Get all panes and analyze their content
         panes = find_pane_by_criteria(window)
         for pane in panes:
             try:
+                # Check if this pane contains VPN-related text
                 text = pane.window_text() if hasattr(pane, 'window_text') and callable(pane.window_text) else ""
                 if "VPN" in text or "connect" in text.lower() or "disconnect" in text.lower():
                     log_message(f"Found potential VPN content pane with text: {text[:30]}...")
@@ -563,11 +489,72 @@ def find_content_pane(window):
                         pass
             except:
                 pass
+    except Exception as e:
+        if DEBUG_UI_INFO:
+            log_message(f"Error finding content pane: {e}")
+    
+    # Method 2: Look for panes with buttons
+    try:
+        # Look for panes that contain buttons
+        for pane in panes:
+            try:
+                # Try to find buttons in this pane
+                buttons = []
+                for child in pane.descendants():
+                    try:
+                        if ((hasattr(child, 'control_type') and callable(child.control_type) and "button" in child.control_type().lower()) or
+                           (hasattr(child, 'element_info') and "button" in str(child.element_info).lower())):
+                            buttons.append(child)
+                    except:
+                        pass
+                
+                if buttons:
+                    log_message(f"Found potential content pane with {len(buttons)} buttons")
+                    return pane
+            except:
+                pass
     except:
         pass
         
+    # Method 3: Try to navigate the control hierarchy using the control identifiers
+    try:
+        # Get control identifiers to guide our search
+        identifiers_text = ""
+        import io
+        from contextlib import redirect_stdout
+        
+        f = io.StringIO()
+        with redirect_stdout(f):
+            window.print_control_identifiers()
+        identifiers_text = f.getvalue()
+        
+        # Look for meaningful panes that might contain the content
+        lines = identifiers_text.splitlines()
+        relevant_panes = []
+        
+        for line in lines:
+            if "Pane - " in line and ("content" in line.lower() or "main" in line.lower()):
+                # This might be a content pane
+                relevant_panes.append(line)
+                
+        if relevant_panes:
+            log_message(f"Found potential content panes from identifiers: {relevant_panes[0]}")
+            # Try to use the first one
+            # Extract the pane ID or name
+            pane_match = re.search(r"Pane - '([^']*)'", relevant_panes[0])
+            if pane_match:
+                pane_name = pane_match.group(1)
+                try:
+                    pane = window.child_window(title=pane_name, control_type="Pane")
+                    if pane.exists():
+                        return pane
+                except:
+                    pass
+    except:
+        pass
+    
     # If all else fails, return the main window to use standard methods
-    log_message("Could not find content pane, using main window")
+    log_message("Could not find specific content pane, using main window")
     return window
 
 def find_connect_button(window):
