@@ -5,8 +5,8 @@ import traceback
 from datetime import datetime
 
 # Configuration
-ALWAYS_SET_FOCUS = True  # Set to True if elements are consistently not found without focus
-DEBUG_UI_INFO = False     # Set to True for additional UI debugging information
+ALWAYS_SET_FOCUS = False  # Set to True if elements are consistently not found without focus
+DEBUG_UI_INFO = True     # Set to True for additional UI debugging information
 
 def get_timestamp():
     """Return a formatted timestamp string in [MM/DD/YYYY HH:MM:SSam/pm] format"""
@@ -171,6 +171,8 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
     Monitor VPN connection and reconnect if disconnected.
     check_interval: time in seconds between connection checks
     """
+    global ALWAYS_SET_FOCUS  # Moved global declaration to the beginning of function
+
     log_message(f"Starting VPN connection monitoring. Checking every {check_interval} seconds...")
     consecutive_focus_needed = 0
     max_consecutive_focus = 3  # After this many failures, always use focus
@@ -256,7 +258,6 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                         # If we repeatedly need focus, update the global setting
                         if consecutive_focus_needed >= max_consecutive_focus and not ALWAYS_SET_FOCUS:
                             log_message("Setting ALWAYS_SET_FOCUS=True due to consistent focus requirements")
-                            global ALWAYS_SET_FOCUS
                             ALWAYS_SET_FOCUS = True
                 except Exception as e:
                     log_message(f"Non-focused status check failed: {e}")
