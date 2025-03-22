@@ -39,10 +39,30 @@ def connect_to_vpn():
         except Exception as e:
             print(f"Error checking connection status: {e}")
 
-        # Click the Connect button
+        # Click the Connect button with retries and ensured visibility
         print("Attempting to click the Connect button...")
-        connect_button = main_window.child_window(title="Connect", control_type="Button")
-        connect_button.click()
+        for attempt in range(3):
+            try:
+                # Refresh window reference and ensure visibility
+                main_window.restore()
+                main_window.set_focus()
+                main_window.wait('visible', timeout=5)
+                
+                # Get fresh button reference each attempt
+                connect_button = main_window.child_window(title="Connect", control_type="Button")
+                connect_button.wait('enabled visible', timeout=10)
+                
+                print(f"Click attempt {attempt + 1}/3")
+                connect_button.click()
+                
+                # Verify click was successful
+                connect_button.wait_not('enabled', timeout=5)
+                break
+            except Exception as e:
+                print(f"Connect attempt {attempt + 1} failed: {str(e)}")
+                if attempt == 2:
+                    raise
+                time.sleep(2)
 
         print("VPN connection initiated")
         return app, main_window
@@ -73,7 +93,11 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
             # For FortiClient, we can check for the presence of the "Connect" button
             # If it's enabled/visible, it likely means we're disconnected
             try:
+                # Refresh window reference before interaction
+                main_window = app.window(title="FortiClient")
                 main_window.restore()
+                main_window.set_focus()
+                main_window.wait('visible', timeout=10)
 
                 # First check for Disconnect button indicating connection
                 disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
