@@ -4,6 +4,10 @@ import sys
 import traceback
 from datetime import datetime
 
+# Configuration
+ALWAYS_SET_FOCUS = True  # Set to True if elements are consistently not found without focus
+DEBUG_UI_INFO = False     # Set to True for additional UI debugging information
+
 def get_timestamp():
     """Return a formatted timestamp string in [MM/DD/YYYY HH:MM:SSam/pm] format"""
     now = datetime.now()
@@ -133,12 +137,43 @@ def connect_to_vpn():
         log_message("3. Try manually interacting with the window once")
         return None, None
 
+def dump_window_info(window):
+    """Debug helper to dump window hierarchy info"""
+    if not DEBUG_UI_INFO:
+        return
+
+    log_message("--- Window Debug Information ---")
+    try:
+        log_message(f"Window title: {window.window_text()}")
+        log_message(f"Control type: {window.control_type() if hasattr(window, 'control_type') else 'Unknown'}")
+        log_message(f"Rectangle: {window.rectangle() if hasattr(window, 'rectangle') else 'Unknown'}")
+        log_message(f"Visible: {window.is_visible() if hasattr(window, 'is_visible') else 'Unknown'}")
+
+        log_message("Child controls:")
+        try:
+            all_children = window.children()
+            for idx, child in enumerate(all_children):
+                try:
+                    control_type = child.control_type() if hasattr(child, 'control_type') else 'Unknown'
+                    text = child.window_text() if hasattr(child, 'window_text') else 'No text'
+                    visible = child.is_visible() if hasattr(child, 'is_visible') else 'Unknown'
+                    log_message(f"  {idx}: {control_type} - '{text}' (visible: {visible})")
+                except Exception as e:
+                    log_message(f"  {idx}: Error getting info: {e}")
+        except Exception as e:
+            log_message(f"Error enumerating children: {e}")
+    except Exception as e:
+        log_message(f"Error dumping window info: {e}")
+    log_message("--- End Window Debug Information ---")
+
 def monitor_vpn_connection(app, main_window, check_interval=60):
     """
     Monitor VPN connection and reconnect if disconnected.
     check_interval: time in seconds between connection checks
     """
     log_message(f"Starting VPN connection monitoring. Checking every {check_interval} seconds...")
+    consecutive_focus_needed = 0
+    max_consecutive_focus = 3  # After this many failures, always use focus
 
     while True:
         try:
@@ -146,7 +181,7 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
             main_window = app.window(title_re="FortiClient.*", visible_only=False)
 
             # First, check if window is minimized - this requires restoration
-            need_to_set_focus = False
+            need_to_set_focus = ALWAYS_SET_FOCUS  # Use the global setting
             need_to_click_connect = False
 
             if hasattr(main_window, 'is_minimized') and main_window.is_minimized():
@@ -155,10 +190,14 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                 time.sleep(1)  # Give time for the UI to stabilize
                 # We generally need to set focus after restoring from minimized state
                 need_to_set_focus = True
+                consecutive_focus_needed = 0  # Reset counter after manual intervention
 
-            # Try to check status without setting focus first (unless window was minimized)
+            # Try to check status without setting focus first (unless window was minimized or always focus)
             if not need_to_set_focus:
                 try:
+                    # Debug window hierarchy if enabled
+                    dump_window_info(main_window)
+
                     # First check for Disconnect button indicating connection
                     disconnect_button_exists = False
                     connect_button_exists = False
@@ -190,10 +229,12 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                     # Determine status based on button states
                     if disconnect_button_exists and disconnect_button_enabled:
                         log_message("VPN connection is active (checked without focus)")
+                        consecutive_focus_needed = 0  # Reset counter on success
                     elif connect_button_exists and connect_button_enabled:
                         log_message("VPN appears to be disconnected. Need to reconnect...")
                         need_to_click_connect = True
                         need_to_set_focus = True  # Need focus to click
+                        consecutive_focus_needed = 0  # Reset counter as we found something
                     else:
                         # More detailed diagnostics for unclear status
                         status_details = []
@@ -209,16 +250,28 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
 
                         log_message(f"VPN status unclear (without focus): {', '.join(status_details)}")
                         need_to_set_focus = True  # Need focus to verify
+                        consecutive_focus_needed += 1
+                        log_message(f"Failed to determine status without focus {consecutive_focus_needed} time(s) in a row")
+
+                        # If we repeatedly need focus, update the global setting
+                        if consecutive_focus_needed >= max_consecutive_focus and not ALWAYS_SET_FOCUS:
+                            log_message("Setting ALWAYS_SET_FOCUS=True due to consistent focus requirements")
+                            global ALWAYS_SET_FOCUS
+                            ALWAYS_SET_FOCUS = True
                 except Exception as e:
                     log_message(f"Non-focused status check failed: {e}")
                     log_message(f"Error type: {type(e).__name__}, detailed error info: {str(e)}")
                     need_to_set_focus = True  # Exception means we need focus to verify
+                    consecutive_focus_needed += 1
 
             # Only set focus if we determined it's necessary
             if need_to_set_focus:
                 log_message("Setting focus to interact with the window...")
                 main_window.set_focus()
                 main_window.wait('visible', timeout=10)
+
+                # Debug window hierarchy after setting focus if enabled
+                dump_window_info(main_window)
 
                 # Check status again with focus
                 try:
