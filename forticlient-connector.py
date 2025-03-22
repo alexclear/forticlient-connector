@@ -1384,6 +1384,8 @@ if __name__ == "__main__":
     log_message("Starting FortiClient connector script")
     app, main_window = connect_to_vpn()
     if app and main_window:
+        # Move window off-screen but keep it focused
+        main_window.move_window(x=-10000, y=-10000)
         # Start monitoring after initial connection
         monitor_vpn_connection(app, main_window)
     else:
