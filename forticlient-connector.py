@@ -8,7 +8,7 @@ def connect_to_vpn():
     try:
         # Try to connect to the FortiClient window
         print("Attempting to connect to FortiClient application...")
-        app = Application(backend="uia").connect(title_re="FortiClient.*")
+        app = Application(backend="uia").connect(title_re="FortiClient.*", visible_only=False)
         print("Connected to application.")
 
         # Get the main window with retries and better state management
@@ -16,8 +16,17 @@ def connect_to_vpn():
         main_window = None
         for attempt in range(3):
             try:
-                main_window = app.window(title_re="FortiClient.*")  # Use regex for title match
-                main_window.restore()
+                # First get the top window (which might be minimized)
+                top_window = app.top_window()
+
+                # If it's minimized, restore it first
+                if hasattr(top_window, 'is_minimized') and top_window.is_minimized():
+                    print("Window is minimized. Attempting to restore...")
+                    top_window.restore()
+                    time.sleep(1)  # Give time for restore to complete
+
+                # Now try to find the main window
+                main_window = app.window(title_re="FortiClient.*", visible_only=False)
                 main_window.set_focus()
                 main_window.wait('ready', timeout=15)  # Wait for window to be fully ready
 
@@ -36,8 +45,21 @@ def connect_to_vpn():
                 if attempt == 2:
                     raise RuntimeError("Failed to initialize window after 3 attempts")
                 time.sleep(3)
-                app.kill()  # Clean up any hung processes
-                app = Application(backend="uia").connect(title_re="FortiClient.*")  # Fresh connection
+                # Don't kill the app on retry, just try a different approach
+                try:
+                    # Try to get any window and restore it
+                    windows = app.windows(visible_only=False)
+                    if windows:
+                        for win in windows:
+                            try:
+                                if hasattr(win, 'restore'):
+                                    win.restore()
+                                    time.sleep(1)
+                                    break
+                            except:
+                                continue
+                except Exception as e:
+                    print(f"Error attempting to restore windows: {e}")
 
         if not main_window:
             raise RuntimeError("Failed to connect to FortiClient window after multiple attempts")
@@ -89,8 +111,8 @@ def connect_to_vpn():
         print(f"\nCRITICAL ERROR: {type(e).__name__} occurred during connection")
         print(f"Detailed error: {str(e)}")
         print("Last known state:")
-        print("- Application object:", 'exists' if app else 'not found')
-        print("- Main window:", 'exists' if main_window else 'not found')
+        print("- Application object:", 'exists' if 'app' in locals() else 'not found')
+        print("- Main window:", 'exists' if 'main_window' in locals() and main_window else 'not found')
         print("\nFull traceback:")
         traceback.print_exc()
         print("\nTroubleshooting tips:")
@@ -112,8 +134,13 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
             # If it's enabled/visible, it likely means we're disconnected
             try:
                 # Refresh window reference before interaction
-                main_window = app.window(title="FortiClient")
-                main_window.restore()
+                main_window = app.window(title="FortiClient", visible_only=False)
+
+                # Check if window is minimized and restore if needed
+                if hasattr(main_window, 'is_minimized') and main_window.is_minimized():
+                    main_window.restore()
+                    time.sleep(1)  # Give time for the UI to stabilize
+
                 main_window.set_focus()
                 main_window.wait('visible', timeout=10)
 
@@ -141,12 +168,19 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
             # If we lost connection to the FortiClient window, try to reconnect
             try:
                 print("Attempting to reconnect to FortiClient application...")
-                app = Application(backend="uia").connect(title_re="FortiClient.*")
+                app = Application(backend="uia").connect(title_re="FortiClient.*", visible_only=False)
+
+                # Get the top window and restore if minimized
+                top_window = app.top_window()
+                if hasattr(top_window, 'is_minimized') and top_window.is_minimized():
+                    top_window.restore()
+                    time.sleep(1)
+
                 main_window = app.window(title_re="FortiClient.*")
                 print("Reconnected to FortiClient window")
             except Exception as reconnect_error:
                 print(f"Failed to reconnect to FortiClient window: {reconnect_error}")
-                print("Will retry in {check_interval} seconds...")
+                print(f"Will retry in {check_interval} seconds...")
 
             time.sleep(check_interval)
 
