@@ -16,6 +16,8 @@ def connect_to_vpn():
         main_window = app.window(title_re="FortiClient.*")
         print("Main window retrieved.")
 
+        main_window.restore()
+
         # Check if already connected
         try:
             disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
@@ -53,6 +55,8 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
             # For FortiClient, we can check for the presence of the "Connect" button
             # If it's enabled/visible, it likely means we're disconnected
             try:
+                main_window.restore()
+
                 # First check for Disconnect button indicating connection
                 disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
                 if disconnect_button.exists() and disconnect_button.is_enabled():
