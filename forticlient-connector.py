@@ -1379,13 +1379,49 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
 
             time.sleep(check_interval)
 
+def move_window_offscreen(window):
+    """Move the window off-screen but keep it active"""
+    try:
+        # Try to get the current window rectangle
+        if hasattr(window, 'rectangle') and callable(window.rectangle):
+            rect = window.rectangle()
+            width = rect.right - rect.left
+            height = rect.bottom - rect.top
+            
+            # Different methods to move the window
+            if hasattr(window, 'set_window_position'):
+                window.set_window_position(-10000, -10000)
+                log_message("Moved window off-screen using set_window_position")
+                return True
+            elif hasattr(window, 'move_window'):
+                # Some implementations need all parameters
+                window.move_window(-10000, -10000, width, height)
+                log_message("Moved window off-screen using move_window")
+                return True
+            else:
+                # Try using MoveWindow from win32gui
+                try:
+                    import win32gui
+                    hwnd = window.handle
+                    win32gui.MoveWindow(hwnd, -10000, -10000, width, height, True)
+                    log_message("Moved window off-screen using win32gui.MoveWindow")
+                    return True
+                except Exception as win32_error:
+                    log_message(f"Failed to move window using win32gui: {win32_error}")
+        
+        log_message("Warning: Could not move window off-screen - methods not available")
+        return False
+    except Exception as e:
+        log_message(f"Error moving window off-screen: {e}")
+        return False
+
 # Main execution
 if __name__ == "__main__":
     log_message("Starting FortiClient connector script")
     app, main_window = connect_to_vpn()
     if app and main_window:
         # Move window off-screen but keep it focused
-        main_window.move_window(x=-10000, y=-10000)
+        move_window_offscreen(main_window)
         # Start monitoring after initial connection
         monitor_vpn_connection(app, main_window)
     else:
