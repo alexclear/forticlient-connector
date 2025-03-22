@@ -11,21 +11,34 @@ def connect_to_vpn():
         app = Application(backend="uia").connect(title_re="FortiClient.*")
         print("Connected to application.")
 
-        # Get the main window with retries
+        # Get the main window with retries and better state management
         print("Attempting to get the main window...")
         main_window = None
-        for _ in range(3):  # Retry up to 3 times
+        for attempt in range(3):
             try:
-                main_window = app.window(title="FortiClient")
-                print("Main window retrieved.")
+                main_window = app.window(title_re="FortiClient.*")  # Use regex for title match
                 main_window.restore()
                 main_window.set_focus()
-                main_window.wait('visible', timeout=10)  # Wait up to 10 seconds for window
-                break
+                main_window.wait('ready', timeout=15)  # Wait for window to be fully ready
+
+                # Verify UI elements exist before proceeding
+                try:
+                    main_window.child_window(title="Disconnect", control_type="Button").wait('exists', timeout=10)
+                    print("Main window verified with UI elements")
+                    break
+                except:
+                    main_window.child_window(title="Connect", control_type="Button").wait('exists', timeout=10)
+                    print("Main window verified with UI elements")
+                    break
+
             except Exception as window_error:
-                print(f"Error getting window (attempt {_+1}/3): {window_error}")
-                time.sleep(2)  # Wait 2 seconds between retries
-        
+                print(f"Window initialization attempt {attempt+1}/3 failed: {str(window_error)}")
+                if attempt == 2:
+                    raise RuntimeError("Failed to initialize window after 3 attempts")
+                time.sleep(3)
+                app.kill()  # Clean up any hung processes
+                app = Application(backend="uia").connect(title_re="FortiClient.*")  # Fresh connection
+
         if not main_window:
             raise RuntimeError("Failed to connect to FortiClient window after multiple attempts")
 
@@ -39,22 +52,27 @@ def connect_to_vpn():
         except Exception as e:
             print(f"Error checking connection status: {e}")
 
-        # Click the Connect button with retries and ensured visibility
-        print("Attempting to click the Connect button...")
+        # Only attempt connection if not already connected
+        print("Attempting to establish VPN connection...")
         for attempt in range(3):
             try:
-                # Refresh window reference and ensure visibility
+                # First check if we're already connected
+                if main_window.child_window(title="Disconnect", control_type="Button").exists():
+                    print("VPN connection already active")
+                    return app, main_window
+
+                # Refresh UI elements
                 main_window.restore()
                 main_window.set_focus()
-                main_window.wait('visible', timeout=5)
-                
-                # Get fresh button reference each attempt
+                main_window.wait('ready', timeout=10)
+
+                # Get fresh button reference with existence check
                 connect_button = main_window.child_window(title="Connect", control_type="Button")
-                connect_button.wait('enabled visible', timeout=10)
-                
+                connect_button.wait('exists enabled visible', timeout=15)
+
                 print(f"Click attempt {attempt + 1}/3")
                 connect_button.click()
-                
+
                 # Verify click was successful
                 connect_button.wait_not('enabled', timeout=5)
                 break
@@ -87,7 +105,7 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
     check_interval: time in seconds between connection checks
     """
     print(f"Starting VPN connection monitoring. Checking every {check_interval} seconds...")
-    
+
     while True:
         try:
             # For FortiClient, we can check for the presence of the "Connect" button
@@ -115,9 +133,9 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
             except Exception as button_error:
                 print(f"Error checking connection status: {button_error}")
                 # This might indicate we're connected (button not present) or another issue
-                
+
             time.sleep(check_interval)
-            
+
         except Exception as e:
             print(f"Error in monitoring: {e}")
             # If we lost connection to the FortiClient window, try to reconnect
@@ -129,7 +147,7 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
             except Exception as reconnect_error:
                 print(f"Failed to reconnect to FortiClient window: {reconnect_error}")
                 print("Will retry in {check_interval} seconds...")
-            
+
             time.sleep(check_interval)
 
 # Main execution
