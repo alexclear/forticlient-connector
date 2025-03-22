@@ -9,7 +9,6 @@ import re
 ALWAYS_SET_FOCUS = False  # Set to True if elements are consistently not found without focus
 DEBUG_UI_INFO = True      # Set to True for additional UI debugging information
 USE_TEXT_DETECTION = True # Use text content analysis for status detection
-CACHE_DURATION = 30      # How long to trust cached status (seconds)
 
 def get_timestamp():
     """Return a formatted timestamp string in [MM/DD/YYYY HH:MM:SSam/pm] format"""
@@ -1273,11 +1272,6 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
     log_message(f"Starting VPN connection monitoring. Checking every {check_interval} seconds...")
     consecutive_focus_needed = 0
     max_consecutive_focus = 3  # After this many failures, always use focus
-    
-    # Status caching to reduce focus operations
-    last_known_status = None  # None=unknown, True=connected, False=disconnected
-    last_status_time = 0
-    last_status_with_focus = False  # Whether the last status check required focus
 
     while True:
         try:
@@ -1287,15 +1281,6 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
             # First, check if window is minimized - this requires restoration
             need_to_set_focus = ALWAYS_SET_FOCUS  # Use the global setting
             need_to_click_connect = False
-
-            # Check if we can use cached status
-            current_time = time.time()
-            status_age = current_time - last_status_time
-            
-            if last_known_status is True and status_age < CACHE_DURATION:
-                log_message(f"Using cached VPN status (connected, age: {int(status_age)}s)")
-                time.sleep(check_interval)
-                continue
 
             if hasattr(main_window, 'is_minimized') and main_window.is_minimized():
                 log_message("Window is minimized, restoring for status check...")
@@ -1316,21 +1301,11 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                     if vpn_state["identified"]:
                         if vpn_state["status"] == "connected":
                             log_message(f"VPN is connected: {vpn_state['details']}")
-                            # Update cache
-                            last_known_status = True
-                            last_status_time = current_time
-                            last_status_with_focus = False
                             consecutive_focus_needed = 0
-                            time.sleep(check_interval)
-                            continue
                         elif vpn_state["status"] == "disconnected":
                             log_message(f"VPN is disconnected: {vpn_state['details']}")
                             need_to_click_connect = True
                             need_to_set_focus = True  # Need focus to click connect
-                            # Update cache
-                            last_known_status = False
-                            last_status_time = current_time
-                            last_status_with_focus = False
                             consecutive_focus_needed = 0
                     else:
                         log_message("Could not identify VPN state without focus")
@@ -1363,10 +1338,6 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                 if vpn_state["identified"]:
                     if vpn_state["status"] == "connected":
                         log_message(f"VPN is connected (with focus): {vpn_state['details']}")
-                        # Update cache
-                        last_known_status = True
-                        last_status_time = current_time
-                        last_status_with_focus = True
                     elif vpn_state["status"] == "disconnected":
                         log_message(f"VPN is disconnected (with focus): {vpn_state['details']}")
                         
@@ -1376,15 +1347,10 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                             log_message("Clicking Connect button to establish VPN connection...")
                             connect_button.click()
                             log_message("Reconnect attempt initiated")
-                            # Reset cache - status will be checked next time
-                            last_known_status = None
-                            last_status_time = 0
                         else:
                             log_message("Could not find Connect button to click")
-                            # Don't update cache in this case - we're in an odd state
                 else:
                     log_message("Could not identify VPN state even with focus")
-                    # Don't update cache for unclear status
 
             time.sleep(check_interval)
 
@@ -1407,10 +1373,6 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
 
                 main_window = app.window(title_re="FortiClient.*", visible_only=False)
                 log_message("Reconnected to FortiClient window")
-                
-                # Reset cache after reconnection
-                last_known_status = None
-                last_status_time = 0
             except Exception as reconnect_error:
                 log_message(f"Failed to reconnect to FortiClient window: {reconnect_error}")
                 log_message(f"Will retry in {check_interval} seconds...")
