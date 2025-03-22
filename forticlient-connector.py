@@ -43,13 +43,19 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
             # For FortiClient, we can check for the presence of the "Connect" button
             # If it's enabled/visible, it likely means we're disconnected
             try:
-                connect_button = main_window.child_window(title="Connect", control_type="Button")
-                if connect_button.is_enabled():
-                    print("VPN appears to be disconnected. Attempting to reconnect...")
-                    connect_button.click()
-                    print("Reconnect attempt initiated")
-                else:
+                # First check for Disconnect button indicating connection
+                disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
+                if disconnect_button.exists() and disconnect_button.is_enabled():
                     print("VPN connection appears to be active")
+                else:
+                    # Check Connect button if Disconnect isn't present/enabled
+                    connect_button = main_window.child_window(title="Connect", control_type="Button")
+                    if connect_button.is_enabled():
+                        print("VPN appears to be disconnected. Attempting to reconnect...")
+                        connect_button.click()
+                        print("Reconnect attempt initiated")
+                    else:
+                        print("VPN status is unclear, possibly connecting...")
             except Exception as button_error:
                 print(f"Error checking connection status: {button_error}")
                 # This might indicate we're connected (button not present) or another issue
