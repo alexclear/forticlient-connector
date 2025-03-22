@@ -11,13 +11,23 @@ def connect_to_vpn():
         app = Application(backend="uia").connect(title_re="FortiClient.*")
         print("Connected to application.")
 
-        # Get the main window
+        # Get the main window with retries
         print("Attempting to get the main window...")
-        main_window = app.window(title_re="FortiClient.*")
-        print("Main window retrieved.")
-
-        main_window.restore()
-        main_window.set_focus()
+        main_window = None
+        for _ in range(3):  # Retry up to 3 times
+            try:
+                main_window = app.window(title="FortiClient")
+                main_window.wait('visible', timeout=10)  # Wait up to 10 seconds for window
+                print("Main window retrieved.")
+                main_window.restore()
+                main_window.set_focus()
+                break
+            except Exception as window_error:
+                print(f"Error getting window (attempt {_+1}/3): {window_error}")
+                time.sleep(2)  # Wait 2 seconds between retries
+        
+        if not main_window:
+            raise RuntimeError("Failed to connect to FortiClient window after multiple attempts")
 
         # Check if already connected
         try:
@@ -38,10 +48,17 @@ def connect_to_vpn():
         return app, main_window
 
     except Exception as e:
-        print(f"Error type: {type(e).__name__}")
-        print(f"Error message: {str(e)}")
-        print("Traceback:")
+        print(f"\nCRITICAL ERROR: {type(e).__name__} occurred during connection")
+        print(f"Detailed error: {str(e)}")
+        print("Last known state:")
+        print("- Application object:", 'exists' if app else 'not found')
+        print("- Main window:", 'exists' if main_window else 'not found')
+        print("\nFull traceback:")
         traceback.print_exc()
+        print("\nTroubleshooting tips:")
+        print("1. Ensure FortiClient is running and visible")
+        print("2. Check the window title matches 'FortiClient' exactly")
+        print("3. Try manually interacting with the window once")
         return None, None
 
 def monitor_vpn_connection(app, main_window, check_interval=60):
