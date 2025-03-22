@@ -7,7 +7,8 @@ import re
 
 # Configuration
 ALWAYS_SET_FOCUS = False  # Set to True if elements are consistently not found without focus
-DEBUG_UI_INFO = True     # Set to True for additional UI debugging information
+DEBUG_UI_INFO = True      # Set to True for additional UI debugging information
+USE_TEXT_DETECTION = True # Use text content analysis for status detection
 
 def get_timestamp():
     """Return a formatted timestamp string in [MM/DD/YYYY HH:MM:SSam/pm] format"""
@@ -146,7 +147,7 @@ def dump_window_info(window):
     log_message("--- Window Debug Information ---")
     try:
         log_message(f"Window title: {window.window_text()}")
-        
+
         # Safely get properties using getattr with defaults
         try:
             control_type = "Unknown"
@@ -158,7 +159,7 @@ def dump_window_info(window):
             log_message(f"Control type: {control_type}")
         except Exception as e:
             log_message(f"Error getting control type: {e}")
-            
+    
         try:
             rectangle = "Unknown"
             if hasattr(window, 'rectangle'):
@@ -169,7 +170,7 @@ def dump_window_info(window):
             log_message(f"Rectangle: {rectangle}")
         except Exception as e:
             log_message(f"Error getting rectangle: {e}")
-            
+
         try:
             visible = "Unknown"
             if hasattr(window, 'is_visible'):
@@ -197,7 +198,7 @@ def dump_window_info(window):
                                     child_type = child.control_type()
                             except:
                                 pass
-                                
+
                             child_text = "No text"
                             try:
                                 if hasattr(child, 'window_text') and callable(getattr(child, 'window_text')):
@@ -207,14 +208,14 @@ def dump_window_info(window):
                                         child_text = child_text[:77] + "..."
                             except:
                                 pass
-                                
+
                             child_visible = "Unknown"
                             try:
                                 if hasattr(child, 'is_visible') and callable(getattr(child, 'is_visible')):
                                     child_visible = child.is_visible()
                             except:
                                 pass
-                                
+
                             log_message(f"  {idx}: {child_type} - '{child_text}' (visible: {child_visible})")
                         except Exception as child_err:
                             log_message(f"  {idx}: Error getting info: {child_err}")
@@ -251,7 +252,7 @@ def find_button_in_text(window, button_text):
                     # Check if it appears to be enabled (heuristic)
                     button_enabled = True  # Assume enabled if found
                     break
-                
+
                 # Also check for elements with matching text in their descendants
                 if hasattr(child, 'descendants') and callable(child.descendants):
                     for desc in child.descendants():
@@ -271,6 +272,84 @@ def find_button_in_text(window, button_text):
         pass
 
     return button_found, button_enabled
+
+def get_window_full_text(window):
+    """Extract all text from window and its children"""
+    full_text = window.window_text() if hasattr(window, 'window_text') else ""
+    
+    try:
+        if hasattr(window, 'children') and callable(window.children):
+            for child in window.children():
+                try:
+                    if hasattr(child, 'window_text') and callable(child.window_text):
+                        child_text = child.window_text()
+                        if child_text:
+                            full_text += " " + child_text
+                except:
+                    pass
+                
+                # Also get text from descendants if available
+                try:
+                    if hasattr(child, 'descendants') and callable(child.descendants):
+                        for desc in child.descendants():
+                            if hasattr(desc, 'window_text') and callable(desc.window_text):
+                                desc_text = desc.window_text()
+                                if desc_text:
+                                    full_text += " " + desc_text
+                except:
+                    pass
+    except Exception as e:
+        log_message(f"Error getting full window text: {e}")
+    
+    return full_text
+
+def analyze_vpn_status_from_text(text):
+    """Analyze window text to determine VPN status"""
+    if not text:
+        return None, "No window text found"
+    
+    # Positive indicators that VPN is connected
+    connected_indicators = [
+        "VPN Connected",
+        "Disconnect",  # Disconnect button present
+        "Duration",    # Duration field indicates active connection
+        "Bytes Received", 
+        "Bytes Sent"
+    ]
+    
+    # Indicators that VPN is disconnected
+    disconnected_indicators = [
+        "Not Connected",
+        "VPN Disconnected",
+        "Connect"  # Connect button present
+    ]
+    
+    # Check for connection indicators
+    found_connected = []
+    for indicator in connected_indicators:
+        if indicator in text:
+            found_connected.append(indicator)
+            
+    # Check for disconnection indicators
+    found_disconnected = []
+    for indicator in disconnected_indicators:
+        if indicator in text:
+            found_disconnected.append(indicator)
+    
+    # Analyze findings
+    if found_connected and not found_disconnected:
+        return True, f"Connected - indicators found: {', '.join(found_connected)}"
+    elif found_disconnected and not found_connected:
+        return False, f"Disconnected - indicators found: {', '.join(found_disconnected)}"
+    elif found_connected and found_disconnected:
+        # If both types of indicators are found, prioritize connected ones
+        # This is because "Connect" might appear in the UI even when connected
+        if len(found_connected) > 1 or "VPN Connected" in found_connected:
+            return True, f"Likely connected despite mixed indicators: connected={found_connected}, disconnected={found_disconnected}"
+        else:
+            return None, f"Ambiguous status: connected={found_connected}, disconnected={found_disconnected}"
+    else:
+        return None, "No clear VPN status indicators found"
 
 def monitor_vpn_connection(app, main_window, check_interval=60):
     """
@@ -306,7 +385,26 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                     # Debug window hierarchy if enabled
                     dump_window_info(main_window)
 
-                    # First check for Disconnect button indicating connection
+                    # First try using text-based detection if configured
+                    if USE_TEXT_DETECTION:
+                        full_text = get_window_full_text(main_window)
+                        text_status, text_details = analyze_vpn_status_from_text(full_text)
+                        
+                        if text_status is True:
+                            log_message(f"Text analysis indicates VPN is connected: {text_details}")
+                            log_message("VPN connection is active (text analysis without focus)")
+                            consecutive_focus_needed = 0  # Reset counter
+                            time.sleep(check_interval)
+                            continue
+                        elif text_status is False:
+                            log_message(f"Text analysis indicates VPN is disconnected: {text_details}")
+                            need_to_click_connect = True
+                            need_to_set_focus = True  # Need focus to click connect
+                        else:
+                            log_message(f"Text analysis is inconclusive: {text_details}")
+                            # Fall through to button detection
+                    
+                    # If text detection was inconclusive or not used, check buttons
                     disconnect_button_exists = False
                     connect_button_exists = False
                     disconnect_button_enabled = False
@@ -363,25 +461,6 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                             connect_button_exists = True
                             connect_button_enabled = text_enabled
 
-                    # Check for VPN status indicators in window text
-                    window_text = main_window.window_text()
-                    full_text = ""
-                    try:
-                        for child in main_window.children():
-                            try:
-                                if hasattr(child, 'window_text'):
-                                    full_text += " " + child.window_text()
-                            except:
-                                pass
-                    except:
-                        pass
-                    
-                    vpn_connected_in_text = "VPN Connected" in full_text or "VPN Connected" in window_text
-                    if vpn_connected_in_text:
-                        log_message("Found 'VPN Connected' text in window - connection is active")
-                        disconnect_button_exists = True  # Infer from text
-                        disconnect_button_enabled = True
-
                     # Determine status based on button states
                     if disconnect_button_exists and disconnect_button_enabled:
                         log_message("VPN connection is active (checked without focus)")
@@ -400,26 +479,19 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                             status_details.append("Connect button exists but is disabled")
                         if not disconnect_button_exists and not connect_button_exists:
                             status_details.append("Neither Connect nor Disconnect buttons found")
-                        if vpn_connected_in_text:
-                            status_details.append("BUT 'VPN Connected' text was found in window")
 
                         if not status_details:
                             status_details.append("Unknown UI state")
 
                         log_message(f"VPN status unclear (without focus): {', '.join(status_details)}")
-                        
-                        # Only set focus if we didn't find any clear indicators
-                        if not vpn_connected_in_text:
-                            need_to_set_focus = True  # Need focus to verify
-                            consecutive_focus_needed += 1
-                            log_message(f"Failed to determine status without focus {consecutive_focus_needed} time(s) in a row")
+                        need_to_set_focus = True  # Need focus to verify
+                        consecutive_focus_needed += 1
+                        log_message(f"Failed to determine status without focus {consecutive_focus_needed} time(s) in a row")
 
-                            # If we repeatedly need focus, update the global setting
-                            if consecutive_focus_needed >= max_consecutive_focus and not ALWAYS_SET_FOCUS:
-                                log_message("Setting ALWAYS_SET_FOCUS=True due to consistent focus requirements")
-                                ALWAYS_SET_FOCUS = True
-                        else:
-                            log_message("Not setting focus because VPN status can be determined from text")
+                        # If we repeatedly need focus, update the global setting
+                        if consecutive_focus_needed >= max_consecutive_focus and not ALWAYS_SET_FOCUS:
+                            log_message("Setting ALWAYS_SET_FOCUS=True due to consistent focus requirements")
+                            ALWAYS_SET_FOCUS = True
                 except Exception as e:
                     log_message(f"Non-focused status check failed: {e}")
                     log_message(f"Error type: {type(e).__name__}, detailed error info: {str(e)}")
@@ -435,7 +507,20 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                 # Debug window hierarchy after setting focus if enabled
                 dump_window_info(main_window)
 
-                # Check status again with focus
+                # First try text-based detection with focus
+                if USE_TEXT_DETECTION:
+                    full_text = get_window_full_text(main_window)
+                    text_status, text_details = analyze_vpn_status_from_text(full_text)
+                    
+                    if text_status is True:
+                        log_message(f"With focus - Text analysis indicates VPN is connected: {text_details}")
+                    elif text_status is False:
+                        log_message(f"With focus - Text analysis indicates VPN is disconnected: {text_details}")
+                        need_to_click_connect = True
+                    else:
+                        log_message(f"With focus - Text analysis is inconclusive: {text_details}")
+
+                # Check status with button detection (with focus)
                 try:
                     disconnect_button_exists = False
                     connect_button_exists = False
@@ -470,31 +555,17 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                             connect_button_exists = True
                             connect_button_enabled = text_enabled
 
-                    # Also check window text for VPN status
-                    window_text = main_window.window_text()
-                    full_text = ""
-                    try:
-                        for child in main_window.children():
-                            try:
-                                if hasattr(child, 'window_text'):
-                                    full_text += " " + child.window_text()
-                            except:
-                                pass
-                    except:
-                        pass
-                    
-                    vpn_connected_in_text = "VPN Connected" in full_text or "VPN Connected" in window_text
-                    if vpn_connected_in_text:
-                        log_message("With focus - Found 'VPN Connected' text in window - connection is active")
-
+                    # Determine final state and take action
                     if disconnect_button_exists and disconnect_button_enabled:
                         log_message("VPN connection is active (confirmed with focus)")
                     elif connect_button_exists and connect_button_enabled and connect_button is not None:
                         log_message("Clicking Connect button to establish VPN connection...")
                         connect_button.click()
                         log_message("Reconnect attempt initiated")
-                    elif vpn_connected_in_text:
-                        log_message("VPN appears connected based on window text")
+                    elif text_status is True:  # Use text analysis result if button detection failed
+                        log_message("VPN appears connected based on window text analysis")
+                    elif text_status is False and need_to_click_connect:
+                        log_message("VPN appears disconnected based on text analysis, but couldn't find a clickable Connect button")
                     else:
                         # More detailed diagnostics
                         status_details = []
@@ -504,8 +575,6 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                             status_details.append("Connect button exists but is disabled")
                         if not disconnect_button_exists and not connect_button_exists:
                             status_details.append("Neither Connect nor Disconnect buttons found")
-                        if vpn_connected_in_text:
-                            status_details.append("BUT 'VPN Connected' text was found in window")
 
                         if not status_details:
                             status_details.append("Unknown UI state")
