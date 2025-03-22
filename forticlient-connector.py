@@ -130,36 +130,85 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
 
     while True:
         try:
-            # For FortiClient, we can check for the presence of the "Connect" button
-            # If it's enabled/visible, it likely means we're disconnected
+            # Get window reference without making it active
+            main_window = app.window(title_re="FortiClient.*", visible_only=False)
+
+            # First, check if window is minimized - this requires restoration
+            window_was_minimized = False
+            if hasattr(main_window, 'is_minimized') and main_window.is_minimized():
+                print("Window is minimized, restoring for status check...")
+                main_window.restore()
+                window_was_minimized = True
+                time.sleep(1)  # Give time for the UI to stabilize
+
+            # Try to check status without setting focus first
             try:
-                # Refresh window reference before interaction
-                main_window = app.window(title="FortiClient", visible_only=False)
+                # Try to inspect UI elements without bringing window to foreground
+                status_check_successful = False
 
-                # Check if window is minimized and restore if needed
-                if hasattr(main_window, 'is_minimized') and main_window.is_minimized():
-                    main_window.restore()
-                    time.sleep(1)  # Give time for the UI to stabilize
+                # First check for Disconnect button indicating connection
+                try:
+                    disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
+                    if disconnect_button.exists() and disconnect_button.is_enabled():
+                        print("VPN connection appears to be active")
+                        status_check_successful = True
+                    else:
+                        # Check Connect button if Disconnect isn't present/enabled
+                        connect_button = main_window.child_window(title="Connect", control_type="Button")
+                        if connect_button.exists() and connect_button.is_enabled():
+                            print("VPN appears to be disconnected. Need to reconnect...")
+                            # Will set focus below to click the button
+                            status_check_successful = True
+                        else:
+                            # Couldn't clearly determine status
+                            status_check_successful = False
+                except Exception:
+                    status_check_successful = False
 
+                # If we couldn't determine status or need to click, we need to set focus
+                if not status_check_successful or (status_check_successful and 
+                    not disconnect_button.exists() and connect_button.exists() and connect_button.is_enabled()):
+                    print("Setting focus to interact with the window...")
+                    main_window.set_focus()
+                    main_window.wait('visible', timeout=10)
+
+                    # Now try again with focus set
+                    try:
+                        disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
+                        if disconnect_button.exists() and disconnect_button.is_enabled():
+                            print("VPN connection is active")
+                        else:
+                            connect_button = main_window.child_window(title="Connect", control_type="Button")
+                            if connect_button.exists() and connect_button.is_enabled():
+                                print("Clicking Connect button to establish VPN connection...")
+                                connect_button.click()
+                                print("Reconnect attempt initiated")
+                            else:
+                                print("VPN status is unclear, possibly connecting...")
+                    except Exception as focused_error:
+                        print(f"Error checking status with focus: {focused_error}")
+
+            except Exception as button_error:
+                print(f"Initial status check failed: {button_error}")
+                print("Setting window focus to retry...")
+                # Try with explicit focus as fallback
                 main_window.set_focus()
                 main_window.wait('visible', timeout=10)
 
-                # First check for Disconnect button indicating connection
-                disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
-                if disconnect_button.exists() and disconnect_button.is_enabled():
-                    print("VPN connection appears to be active")
-                else:
-                    # Check Connect button if Disconnect isn't present/enabled
-                    connect_button = main_window.child_window(title="Connect", control_type="Button")
-                    if connect_button.is_enabled():
-                        print("VPN appears to be disconnected. Attempting to reconnect...")
-                        connect_button.click()
-                        print("Reconnect attempt initiated")
+                try:
+                    disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
+                    if disconnect_button.exists() and disconnect_button.is_enabled():
+                        print("VPN connection appears to be active")
                     else:
-                        print("VPN status is unclear, possibly connecting...")
-            except Exception as button_error:
-                print(f"Error checking connection status: {button_error}")
-                # This might indicate we're connected (button not present) or another issue
+                        connect_button = main_window.child_window(title="Connect", control_type="Button")
+                        if connect_button.exists() and connect_button.is_enabled():
+                            print("VPN appears to be disconnected. Attempting to reconnect...")
+                            connect_button.click()
+                            print("Reconnect attempt initiated")
+                        else:
+                            print("VPN status is unclear, possibly connecting...")
+                except Exception as retry_error:
+                    print(f"Error in retry status check: {retry_error}")
 
             time.sleep(check_interval)
 
@@ -176,7 +225,7 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                     top_window.restore()
                     time.sleep(1)
 
-                main_window = app.window(title_re="FortiClient.*")
+                main_window = app.window(title_re="FortiClient.*", visible_only=False)
                 print("Reconnected to FortiClient window")
             except Exception as reconnect_error:
                 print(f"Failed to reconnect to FortiClient window: {reconnect_error}")
