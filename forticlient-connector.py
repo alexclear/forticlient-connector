@@ -47,15 +47,21 @@ def connect_to_vpn():
                 main_window.set_focus()
                 main_window.wait('ready', timeout=15)  # Wait for window to be fully ready
 
-                # Verify UI elements exist before proceeding
-                try:
-                    main_window.child_window(title="Disconnect", control_type="Button").wait('exists', timeout=10)
-                    log_message("Main window verified with UI elements")
+                # Try to identify key UI elements
+                result = identify_vpn_state(main_window)
+                if result["identified"]:
+                    log_message(f"Main window verified: VPN is {result['status']}")
                     break
-                except:
-                    main_window.child_window(title="Connect", control_type="Button").wait('exists', timeout=10)
-                    log_message("Main window verified with UI elements")
-                    break
+                else:
+                    # Fallback to old method
+                    try:
+                        main_window.child_window(title="Disconnect", control_type="Button").wait('exists', timeout=10)
+                        log_message("Main window verified with disconnect button")
+                        break
+                    except:
+                        main_window.child_window(title="Connect", control_type="Button").wait('exists', timeout=10)
+                        log_message("Main window verified with connect button")
+                        break
 
             except Exception as window_error:
                 log_message(f"Window initialization attempt {attempt+1}/3 failed: {str(window_error)}")
@@ -83,20 +89,28 @@ def connect_to_vpn():
 
         # Check if already connected
         try:
-            disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
-            if disconnect_button.exists() and disconnect_button.is_enabled():
+            vpn_state = identify_vpn_state(main_window)
+            if vpn_state["identified"] and vpn_state["status"] == "connected":
                 log_message("VPN is already connected")
                 log_message("VPN connection check completed")
                 return app, main_window
         except Exception as e:
             log_message(f"Error checking connection status: {e}")
+            try:
+                disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
+                if disconnect_button.exists() and disconnect_button.is_enabled():
+                    log_message("VPN is already connected (detected with standard method)")
+                    return app, main_window
+            except:
+                pass  # Continue to connection attempt
 
         # Only attempt connection if not already connected
         log_message("Attempting to establish VPN connection...")
         for attempt in range(3):
             try:
                 # First check if we're already connected
-                if main_window.child_window(title="Disconnect", control_type="Button").exists():
+                vpn_state = identify_vpn_state(main_window)
+                if vpn_state["identified"] and vpn_state["status"] == "connected":
                     log_message("VPN connection already active")
                     return app, main_window
 
@@ -105,16 +119,17 @@ def connect_to_vpn():
                 main_window.set_focus()
                 main_window.wait('ready', timeout=10)
 
-                # Get fresh button reference with existence check
-                connect_button = main_window.child_window(title="Connect", control_type="Button")
-                connect_button.wait('exists enabled visible', timeout=15)
+                # Try to find Connect button using multiple methods
+                connect_button = find_connect_button(main_window)
+                if connect_button:
+                    log_message(f"Click attempt {attempt + 1}/3")
+                    connect_button.click()
+                    time.sleep(3)  # Wait for connection to initiate
+                    break
+                else:
+                    log_message(f"Connect button not found for attempt {attempt + 1}")
+                    raise RuntimeError("Connect button not found")
 
-                log_message(f"Click attempt {attempt + 1}/3")
-                connect_button.click()
-
-                # Verify click was successful
-                connect_button.wait_not('enabled', timeout=5)
-                break
             except Exception as e:
                 log_message(f"Connect attempt {attempt + 1} failed: {str(e)}")
                 if attempt == 2:
@@ -139,6 +154,288 @@ def connect_to_vpn():
         log_message("2. Check the window title matches 'FortiClient' exactly")
         log_message("3. Try manually interacting with the window once")
         return None, None
+
+def find_connect_button(window):
+    """Use multiple methods to find the Connect button"""
+    # Method 1: Standard approach
+    try:
+        connect_button = window.child_window(title="Connect", control_type="Button")
+        if connect_button.exists():
+            return connect_button
+    except:
+        pass
+    
+    # Method 2: Search by ID patterns from control identifiers
+    try:
+        # Try various possible identifiers based on the control hierarchy
+        for identifier in ["Button", "ConnectButton", "Connect"]:
+            try:
+                btn = window.child_window(best_match=identifier)
+                if btn.exists():
+                    if btn.window_text() == "Connect":
+                        return btn
+            except:
+                pass
+    except:
+        pass
+    
+    # Method 3: Search in window hierarchy with print_control_identifiers
+    try:
+        identifiers_text = ""
+        # Capture the output of print_control_identifiers
+        import io
+        from contextlib import redirect_stdout
+        
+        f = io.StringIO()
+        with redirect_stdout(f):
+            window.print_control_identifiers()
+        identifiers_text = f.getvalue()
+        
+        # Look for Connect button in the output
+        if "Connect" in identifiers_text and "Button" in identifiers_text:
+            # Extract the path from the identifiers text
+            lines = identifiers_text.splitlines()
+            for i, line in enumerate(lines):
+                if "Button - 'Connect'" in line:
+                    # Look for the child_window line that follows
+                    for j in range(i, min(i+5, len(lines))):
+                        if "child_window(" in lines[j] and "title=\"Connect\"" in lines[j]:
+                            # Extract the specification
+                            spec = lines[j].strip()
+                            log_message(f"Found Connect button spec: {spec}")
+                            # Try to use this spec to get the button
+                            try:
+                                if "control_type=\"Button\"" in spec:
+                                    return window.child_window(title="Connect", control_type="Button")
+                            except:
+                                pass
+    except Exception as e:
+        log_message(f"Error in control identifier search: {e}")
+    
+    # Method 4: Search all descendants
+    try:
+        if hasattr(window, 'descendants'):
+            for elem in window.descendants():
+                try:
+                    if elem.window_text() == "Connect" and "Button" in str(type(elem)):
+                        return elem
+                except:
+                    pass
+    except:
+        pass
+    
+    # Method 5: Deep searching through the window hierarchy manually
+    try:
+        # Try to navigate through the known structure to find the button
+        for child_pane in window.children():
+            try:
+                for subpane in child_pane.children():
+                    try:
+                        buttons = subpane.children(control_type="Button")
+                        for button in buttons:
+                            if button.window_text() == "Connect":
+                                return button
+                    except:
+                        pass
+            except:
+                pass
+    except Exception as e:
+        log_message(f"Error in deep search: {e}")
+    
+    return None
+
+def find_disconnect_button(window):
+    """Use multiple methods to find the Disconnect button"""
+    # Method 1: Standard approach
+    try:
+        disconnect_button = window.child_window(title="Disconnect", control_type="Button")
+        if disconnect_button.exists():
+            return disconnect_button
+    except:
+        pass
+    
+    # Method 2: Search by ID patterns from control identifiers
+    try:
+        # Try various possible identifiers based on the control hierarchy
+        for identifier in ["Button", "DisconnectButton", "Disconnect"]:
+            try:
+                btn = window.child_window(best_match=identifier)
+                if btn.exists():
+                    if btn.window_text() == "Disconnect":
+                        return btn
+            except:
+                pass
+    except:
+        pass
+    
+    # Method 3: Search in window hierarchy with print_control_identifiers
+    try:
+        identifiers_text = ""
+        # Capture the output of print_control_identifiers
+        import io
+        from contextlib import redirect_stdout
+        
+        f = io.StringIO()
+        with redirect_stdout(f):
+            window.print_control_identifiers()
+        identifiers_text = f.getvalue()
+        
+        # Look for Disconnect button in the output
+        if "Disconnect" in identifiers_text and "Button" in identifiers_text:
+            # Extract the path from the identifiers text
+            lines = identifiers_text.splitlines()
+            for i, line in enumerate(lines):
+                if "Button - 'Disconnect'" in line:
+                    # Look for the child_window line that follows
+                    for j in range(i, min(i+5, len(lines))):
+                        if "child_window(" in lines[j] and "title=\"Disconnect\"" in lines[j]:
+                            # Extract the specification
+                            spec = lines[j].strip()
+                            log_message(f"Found Disconnect button spec: {spec}")
+                            # Try to use this spec to get the button
+                            try:
+                                if "control_type=\"Button\"" in spec:
+                                    return window.child_window(title="Disconnect", control_type="Button")
+                            except:
+                                pass
+    except Exception as e:
+        log_message(f"Error in control identifier search: {e}")
+    
+    # Method 4: Search all descendants
+    try:
+        if hasattr(window, 'descendants'):
+            for elem in window.descendants():
+                try:
+                    if elem.window_text() == "Disconnect" and "Button" in str(type(elem)):
+                        return elem
+                except:
+                    pass
+    except:
+        pass
+    
+    # Method 5: Deep searching through the window hierarchy manually
+    try:
+        # Try to navigate through the known structure to find the button
+        for child_pane in window.children():
+            try:
+                for subpane in child_pane.children():
+                    try:
+                        buttons = subpane.children(control_type="Button")
+                        for button in buttons:
+                            if button.window_text() == "Disconnect":
+                                return button
+                    except:
+                        pass
+            except:
+                pass
+    except Exception as e:
+        log_message(f"Error in deep search: {e}")
+    
+    return None
+
+def identify_vpn_state(window):
+    """
+    Identify VPN state using multiple methods
+    Returns a dict with keys:
+    - identified: True if state was successfully identified
+    - status: 'connected', 'disconnected', or 'unknown'
+    - details: Additional information about the state
+    """
+    result = {
+        "identified": False,
+        "status": "unknown",
+        "details": ""
+    }
+    
+    # First, get full window text to analyze
+    full_text = get_window_full_text(window)
+    
+    # Method 1: Use control identifiers to get a more complete view
+    try:
+        identifiers_text = ""
+        import io
+        from contextlib import redirect_stdout
+        
+        f = io.StringIO()
+        with redirect_stdout(f):
+            window.print_control_identifiers()
+        identifiers_text = f.getvalue()
+        log_message("Control Identifiers output captured for analysis")
+        
+        # Add the identifiers text to our full text for analysis
+        full_text += " " + identifiers_text
+    except Exception as e:
+        log_message(f"Error capturing control identifiers: {e}")
+    
+    # Method 2: Check for the presence of buttons
+    disconnect_button = find_disconnect_button(window)
+    connect_button = find_connect_button(window)
+    
+    disconnect_exists = disconnect_button is not None
+    connect_exists = connect_button is not None
+    
+    if disconnect_exists:
+        try:
+            disconnect_enabled = disconnect_button.is_enabled()
+        except:
+            disconnect_enabled = False
+    else:
+        disconnect_enabled = False
+        
+    if connect_exists:
+        try:
+            connect_enabled = connect_button.is_enabled()
+        except:
+            connect_enabled = False
+    else:
+        connect_enabled = False
+    
+    # Method 3: Analyze the window text for status indicators
+    connected_indicators = [
+        "VPN Connected",
+        "Disconnect",       # Disconnect button present
+        "Duration",         # Duration field indicates active connection
+        "Bytes Received", 
+        "Bytes Sent",
+        "IP Address",       # Connected VPNs typically show the assigned IP
+        "Username"          # Connected VPNs typically show the username
+    ]
+    
+    disconnected_indicators = [
+        "Not Connected",
+        "VPN Disconnected",
+        "Connect"           # Connect button present
+    ]
+    
+    found_connected = []
+    for indicator in connected_indicators:
+        if indicator in full_text:
+            found_connected.append(indicator)
+            
+    found_disconnected = []
+    for indicator in disconnected_indicators:
+        if indicator in full_text:
+            found_disconnected.append(indicator)
+    
+    # Analyze all the evidence to determine state
+    if disconnect_exists and disconnect_enabled:
+        result["identified"] = True
+        result["status"] = "connected"
+        result["details"] = "Disconnect button found and enabled"
+    elif connect_exists and connect_enabled:
+        result["identified"] = True
+        result["status"] = "disconnected"
+        result["details"] = "Connect button found and enabled"
+    elif len(found_connected) >= 2:  # Require at least 2 indicators for confidence
+        result["identified"] = True
+        result["status"] = "connected"
+        result["details"] = f"Text indicators suggest connected: {', '.join(found_connected)}"
+    elif len(found_disconnected) >= 1 and not found_connected:
+        result["identified"] = True
+        result["status"] = "disconnected"
+        result["details"] = f"Text indicators suggest disconnected: {', '.join(found_disconnected)}"
+    
+    return result
 
 def dump_window_info(window):
     """Debug helper to dump window hierarchy info"""
@@ -226,6 +523,19 @@ def dump_window_info(window):
             log_message(f"Error enumerating children: {children_err}")
     except Exception as e:
         log_message(f"Error dumping window info: {e}")
+    
+    # Always print control identifiers when debugging is enabled
+    try:
+        import io
+        from contextlib import redirect_stdout
+        
+        f = io.StringIO()
+        with redirect_stdout(f):
+            window.print_control_identifiers()
+        log_message(f.getvalue())
+    except Exception as e:
+        log_message(f"Error printing control identifiers: {e}")
+    
     log_message("--- End Window Debug Information ---")
 
 def find_button_in_text(window, button_text):
@@ -333,7 +643,15 @@ def get_window_full_text(window, with_focus=False):
     # Method 4: Try to get printable_tree if available (used by pywinauto for debugging)
     try:
         if hasattr(window, 'print_control_identifiers'):
-            tree_text = str(window.print_control_identifiers())
+            # Capture the output
+            import io
+            from contextlib import redirect_stdout
+            
+            f = io.StringIO()
+            with redirect_stdout(f):
+                window.print_control_identifiers()
+            
+            tree_text = f.getvalue()
             if tree_text:
                 texts.append(tree_text)
     except:
@@ -444,137 +762,43 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
                 need_to_set_focus = True
                 consecutive_focus_needed = 0  # Reset counter after manual intervention
 
-            # Try to check status without setting focus first (unless window was minimized or always focus)
+            # Try to identify VPN state without setting focus
             if not need_to_set_focus:
                 try:
                     # Debug window hierarchy if enabled
                     dump_window_info(main_window)
-
-                    # First try using text-based detection if configured
-                    if USE_TEXT_DETECTION:
-                        full_text = get_window_full_text(main_window)
-                        text_status, text_details = analyze_vpn_status_from_text(full_text)
-                        
-                        if text_status is True:
-                            log_message(f"Text analysis indicates VPN is connected: {text_details}")
-                            log_message("VPN connection is active (text analysis without focus)")
-                            consecutive_focus_needed = 0  # Reset counter
+                    
+                    vpn_state = identify_vpn_state(main_window)
+                    
+                    if vpn_state["identified"]:
+                        if vpn_state["status"] == "connected":
+                            log_message(f"VPN is connected: {vpn_state['details']}")
                             # Update cache
                             last_known_status = True
                             last_status_time = current_time
                             last_status_with_focus = False
+                            consecutive_focus_needed = 0
                             time.sleep(check_interval)
                             continue
-                        elif text_status is False:
-                            log_message(f"Text analysis indicates VPN is disconnected: {text_details}")
+                        elif vpn_state["status"] == "disconnected":
+                            log_message(f"VPN is disconnected: {vpn_state['details']}")
                             need_to_click_connect = True
                             need_to_set_focus = True  # Need focus to click connect
                             # Update cache
                             last_known_status = False
                             last_status_time = current_time
                             last_status_with_focus = False
-                        else:
-                            log_message(f"Text analysis is inconclusive: {text_details}")
-                            # Fall through to button detection
-                    
-                    # If text detection was inconclusive or not used, check buttons
-                    disconnect_button_exists = False
-                    connect_button_exists = False
-                    disconnect_button_enabled = False
-                    connect_button_enabled = False
-
-                    # Try standard approach first
-                    try:
-                        disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
-                        disconnect_button_exists = disconnect_button.exists()
-                        if disconnect_button_exists:
-                            disconnect_button_enabled = disconnect_button.is_enabled()
-                            log_message(f"Disconnect button state: exists={disconnect_button_exists}, enabled={disconnect_button_enabled}")
-                        else:
-                            log_message("Disconnect button not found with standard method (without focus)")
-                            # Try text-based search
-                            text_found, text_enabled = find_button_in_text(main_window, "Disconnect")
-                            if text_found:
-                                log_message(f"Disconnect text found in window content, likely enabled={text_enabled}")
-                                disconnect_button_exists = True
-                                disconnect_button_enabled = text_enabled
-                            else:
-                                log_message("Disconnect button not found (without focus)")
-                    except Exception as disc_err:
-                        log_message(f"Error checking Disconnect button: {disc_err}")
-                        # Try text-based search as fallback
-                        text_found, text_enabled = find_button_in_text(main_window, "Disconnect")
-                        if text_found:
-                            log_message(f"Disconnect text found in window content, likely enabled={text_enabled}")
-                            disconnect_button_exists = True
-                            disconnect_button_enabled = text_enabled
-
-                    try:
-                        connect_button = main_window.child_window(title="Connect", control_type="Button")
-                        connect_button_exists = connect_button.exists()
-                        if connect_button_exists:
-                            connect_button_enabled = connect_button.is_enabled()
-                            log_message(f"Connect button state: exists={connect_button_exists}, enabled={connect_button_enabled}")
-                        else:
-                            log_message("Connect button not found with standard method (without focus)")
-                            # Try text-based search
-                            text_found, text_enabled = find_button_in_text(main_window, "Connect")
-                            if text_found:
-                                log_message(f"Connect text found in window content, likely enabled={text_enabled}")
-                                connect_button_exists = True
-                                connect_button_enabled = text_enabled
-                            else:
-                                log_message("Connect button not found (without focus)")
-                    except Exception as conn_err:
-                        log_message(f"Error checking Connect button: {conn_err}")
-                        # Try text-based search as fallback
-                        text_found, text_enabled = find_button_in_text(main_window, "Connect")
-                        if text_found:
-                            log_message(f"Connect text found in window content, likely enabled={text_enabled}")
-                            connect_button_exists = True
-                            connect_button_enabled = text_enabled
-
-                    # Determine status based on button states
-                    if disconnect_button_exists and disconnect_button_enabled:
-                        log_message("VPN connection is active (checked without focus)")
-                        consecutive_focus_needed = 0  # Reset counter on success
-                        # Update cache
-                        last_known_status = True
-                        last_status_time = current_time
-                        last_status_with_focus = False
-                    elif connect_button_exists and connect_button_enabled:
-                        log_message("VPN appears to be disconnected. Need to reconnect...")
-                        need_to_click_connect = True
-                        need_to_set_focus = True  # Need focus to click
-                        consecutive_focus_needed = 0  # Reset counter as we found something
-                        # Update cache
-                        last_known_status = False
-                        last_status_time = current_time
-                        last_status_with_focus = False
+                            consecutive_focus_needed = 0
                     else:
-                        # More detailed diagnostics for unclear status
-                        status_details = []
-                        if disconnect_button_exists and not disconnect_button_enabled:
-                            status_details.append("Disconnect button exists but is disabled")
-                        if connect_button_exists and not connect_button_enabled:
-                            status_details.append("Connect button exists but is disabled")
-                        if not disconnect_button_exists and not connect_button_exists:
-                            status_details.append("Neither Connect nor Disconnect buttons found")
-
-                        if not status_details:
-                            status_details.append("Unknown UI state")
-
-                        log_message(f"VPN status unclear (without focus): {', '.join(status_details)}")
-                        need_to_set_focus = True  # Need focus to verify
+                        log_message("Could not identify VPN state without focus")
+                        need_to_set_focus = True
                         consecutive_focus_needed += 1
                         log_message(f"Failed to determine status without focus {consecutive_focus_needed} time(s) in a row")
-
+                        
                         # If we repeatedly need focus, update the global setting
                         if consecutive_focus_needed >= max_consecutive_focus and not ALWAYS_SET_FOCUS:
                             log_message("Setting ALWAYS_SET_FOCUS=True due to consistent focus requirements")
                             ALWAYS_SET_FOCUS = True
-                            
-                        # Don't update cache for unclear status
                 except Exception as e:
                     log_message(f"Non-focused status check failed: {e}")
                     log_message(f"Error type: {type(e).__name__}, detailed error info: {str(e)}")
@@ -589,104 +813,35 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
 
                 # Debug window hierarchy after setting focus if enabled
                 dump_window_info(main_window)
-
-                # First try text-based detection with focus
-                if USE_TEXT_DETECTION:
-                    full_text = get_window_full_text(main_window, with_focus=True)
-                    text_status, text_details = analyze_vpn_status_from_text(full_text)
-                    
-                    if text_status is True:
-                        log_message(f"With focus - Text analysis indicates VPN is connected: {text_details}")
+                
+                # Check VPN state with focus
+                vpn_state = identify_vpn_state(main_window)
+                
+                if vpn_state["identified"]:
+                    if vpn_state["status"] == "connected":
+                        log_message(f"VPN is connected (with focus): {vpn_state['details']}")
                         # Update cache
                         last_known_status = True
                         last_status_time = current_time
                         last_status_with_focus = True
-                    elif text_status is False:
-                        log_message(f"With focus - Text analysis indicates VPN is disconnected: {text_details}")
-                        need_to_click_connect = True
-                        # Update cache
-                        last_known_status = False
-                        last_status_time = current_time
-                        last_status_with_focus = True
-                    else:
-                        log_message(f"With focus - Text analysis is inconclusive: {text_details}")
-
-                # Check status with button detection (with focus)
-                try:
-                    disconnect_button_exists = False
-                    connect_button_exists = False
-                    disconnect_button = None
-                    connect_button = None
-
-                    try:
-                        disconnect_button = main_window.child_window(title="Disconnect", control_type="Button")
-                        disconnect_button_exists = disconnect_button.exists()
-                        disconnect_button_enabled = disconnect_button.is_enabled() if disconnect_button_exists else False
-                        log_message(f"With focus - Disconnect button state: exists={disconnect_button_exists}, enabled={disconnect_button_enabled}")
-                    except Exception as disc_err:
-                        log_message(f"With focus - Error checking Disconnect button: {disc_err}")
-                        # Try text-based search as fallback
-                        text_found, text_enabled = find_button_in_text(main_window, "Disconnect")
-                        if text_found:
-                            log_message(f"With focus - Disconnect text found in window content, likely enabled={text_enabled}")
-                            disconnect_button_exists = True
-                            disconnect_button_enabled = text_enabled
-
-                    try:
-                        connect_button = main_window.child_window(title="Connect", control_type="Button")
-                        connect_button_exists = connect_button.exists()
-                        connect_button_enabled = connect_button.is_enabled() if connect_button_exists else False
-                        log_message(f"With focus - Connect button state: exists={connect_button_exists}, enabled={connect_button_enabled}")
-                    except Exception as conn_err:
-                        log_message(f"With focus - Error checking Connect button: {conn_err}")
-                        # Try text-based search as fallback
-                        text_found, text_enabled = find_button_in_text(main_window, "Connect")
-                        if text_found:
-                            log_message(f"With focus - Connect text found in window content, likely enabled={text_enabled}")
-                            connect_button_exists = True
-                            connect_button_enabled = text_enabled
-
-                    # Determine final state and take action
-                    if disconnect_button_exists and disconnect_button_enabled:
-                        log_message("VPN connection is active (confirmed with focus)")
-                        # Update cache
-                        last_known_status = True
-                        last_status_time = current_time
-                        last_status_with_focus = True
-                    elif connect_button_exists and connect_button_enabled and connect_button is not None:
-                        log_message("Clicking Connect button to establish VPN connection...")
-                        connect_button.click()
-                        log_message("Reconnect attempt initiated")
-                        # Reset cache - status will be checked next time
-                        last_known_status = None
-                        last_status_time = 0
-                    elif text_status is True:  # Use text analysis result if button detection failed
-                        log_message("VPN appears connected based on window text analysis")
-                        # Update cache
-                        last_known_status = True
-                        last_status_time = current_time
-                        last_status_with_focus = True
-                    elif text_status is False and need_to_click_connect:
-                        log_message("VPN appears disconnected based on text analysis, but couldn't find a clickable Connect button")
-                        # Don't update cache in this case - we're in an odd state
-                    else:
-                        # More detailed diagnostics
-                        status_details = []
-                        if disconnect_button_exists and not disconnect_button_enabled:
-                            status_details.append("Disconnect button exists but is disabled")
-                        if connect_button_exists and not connect_button_enabled:
-                            status_details.append("Connect button exists but is disabled")
-                        if not disconnect_button_exists and not connect_button_exists:
-                            status_details.append("Neither Connect nor Disconnect buttons found")
-
-                        if not status_details:
-                            status_details.append("Unknown UI state")
-
-                        log_message(f"VPN status unclear (with focus): {', '.join(status_details)}")
-                        # Don't update cache for unclear status
-                except Exception as focused_error:
-                    log_message(f"Error checking status with focus: {focused_error}")
-                    log_message(f"Error type: {type(focused_error).__name__}, detailed error: {str(focused_error)}")
+                    elif vpn_state["status"] == "disconnected":
+                        log_message(f"VPN is disconnected (with focus): {vpn_state['details']}")
+                        
+                        # Try to click the Connect button
+                        connect_button = find_connect_button(main_window)
+                        if connect_button:
+                            log_message("Clicking Connect button to establish VPN connection...")
+                            connect_button.click()
+                            log_message("Reconnect attempt initiated")
+                            # Reset cache - status will be checked next time
+                            last_known_status = None
+                            last_status_time = 0
+                        else:
+                            log_message("Could not find Connect button to click")
+                            # Don't update cache in this case - we're in an odd state
+                else:
+                    log_message("Could not identify VPN state even with focus")
+                    # Don't update cache for unclear status
 
             time.sleep(check_interval)
 
