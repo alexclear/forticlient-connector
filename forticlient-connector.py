@@ -6,6 +6,7 @@ from datetime import datetime
 import re
 
 # Configuration
+HOST_TO_PING = "10.222.3.172"  # Host to check for VPN connectivity
 ALWAYS_SET_FOCUS = False  # Set to True if elements are consistently not found without focus
 DEBUG_UI_INFO = True      # Set to True for additional UI debugging information
 USE_TEXT_DETECTION = True # Use text content analysis for status detection
@@ -1207,6 +1208,33 @@ def get_window_full_text(window, with_focus=False):
     
     return full_text
 
+def identify_vpn_state_by_ping():
+    """Determine VPN status using ICMP ping to predefined host"""
+    import subprocess
+
+    result = {
+        "identified": True,
+        "status": "disconnected",
+        "details": "No ping response"
+    }
+
+    try:
+        # Run ping command with 4 attempts
+        command = ["ping", "-n", "4", HOST_TO_PING]
+        output = subprocess.run(command, capture_output=True, text=True, timeout=10)
+
+        if "Reply from" in output.stdout:
+            result["status"] = "connected"
+            result["details"] = f"Received ping response from {HOST_TO_PING}"
+
+    except subprocess.TimeoutExpired:
+        result["details"] = "Ping timed out"
+    except Exception as e:
+        result["identified"] = False
+        result["details"] = f"Ping error: {str(e)}"
+
+    return result
+
 def analyze_vpn_status_from_text(text):
     """Analyze window text to determine VPN status"""
     if not text:
@@ -1275,7 +1303,14 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
 
     while True:
         try:
-            # Get window reference without making it active
+            # First check connectivity via ping
+            ping_state = identify_vpn_state_by_ping()
+            if ping_state["status"] == "connected":
+                log_message(f"VPN connected via ping: {ping_state['details']}")
+                time.sleep(check_interval)
+                continue
+
+            # If ping failed, proceed with UI checks
             main_window = app.window(title_re="FortiClient.*", visible_only=False)
 
             # First, check if window is minimized - this requires restoration
