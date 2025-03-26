@@ -1379,94 +1379,6 @@ def monitor_vpn_connection(app, main_window, check_interval=60):
 
             time.sleep(check_interval)
 
-def move_window_offscreen(window):
-    """Move the window off-screen but keep it active"""
-    try:
-        # Logging more detail for debugging
-        log_message("Attempting to move window off-screen...")
-        
-        # Try to directly use win32gui for more reliable window movement
-        try:
-            import win32gui
-            import win32con
-            
-            # Get window handle directly from pywinauto window
-            if hasattr(window, 'handle'):
-                hwnd = window.handle
-                log_message(f"Found window handle: {hwnd}")
-                
-                # Get the current window position and size
-                rect = win32gui.GetWindowRect(hwnd)
-                log_message(f"Current window position: {rect}")
-                
-                # Try multiple approaches to move the window
-                # Method 1: Use SetWindowPos
-                try:
-                    # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
-                    flags = win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE
-                    result = win32gui.SetWindowPos(hwnd, 0, -32000, -32000, 0, 0, flags)
-                    log_message(f"SetWindowPos result: {result}")
-                    time.sleep(0.5)  # Give time for the move to take effect
-                    
-                    # Verify if it worked
-                    new_rect = win32gui.GetWindowRect(hwnd)
-                    log_message(f"New window position (after SetWindowPos): {new_rect}")
-                    if new_rect[0] < -10000:
-                        log_message("Successfully moved window off-screen with SetWindowPos")
-                        return True
-                except Exception as e:
-                    log_message(f"SetWindowPos failed: {e}")
-                
-                # Method 2: Use MoveWindow
-                try:
-                    width = rect[2] - rect[0]
-                    height = rect[3] - rect[1]
-                    result = win32gui.MoveWindow(hwnd, -32000, -32000, width, height, True)
-                    log_message(f"MoveWindow result: {result}")
-                    time.sleep(0.5)  # Give time for the move to take effect
-                    
-                    # Verify if it worked
-                    new_rect = win32gui.GetWindowRect(hwnd)
-                    log_message(f"New window position (after MoveWindow): {new_rect}")
-                    if new_rect[0] < -10000:
-                        log_message("Successfully moved window off-screen with MoveWindow")
-                        return True
-                except Exception as e:
-                    log_message(f"MoveWindow failed: {e}")
-                
-                # Method 3: Use ShowWindow to minimize
-                if not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
-                    log_message("Window is already minimized or not visible")
-                else:
-                    try:
-                        win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
-                        log_message("Minimized window since we couldn't move it off-screen")
-                        return True
-                    except Exception as e:
-                        log_message(f"ShowWindow failed: {e}")
-            else:
-                log_message("Window handle not available")
-        except ImportError:
-            log_message("win32gui not available, falling back to pywinauto methods")
-        except Exception as win32_err:
-            log_message(f"Error using win32gui: {win32_err}")
-        
-        # Fallback to pywinauto methods if win32gui approach failed
-        # Method 4: Try pywinauto's minimize method as a fallback
-        try:
-            if hasattr(window, 'minimize'):
-                window.minimize()
-                log_message("Minimized window using pywinauto minimize method")
-                return True
-        except Exception as e:
-            log_message(f"Minimize failed: {e}")
-        
-        log_message("All attempts to move window off-screen or minimize have failed")
-        return False
-    except Exception as e:
-        log_message(f"Error in move_window_offscreen: {e}")
-        log_message(traceback.format_exc())
-        return False
 
 # Main execution
 if __name__ == "__main__":
@@ -1474,15 +1386,6 @@ if __name__ == "__main__":
     app, main_window = connect_to_vpn()
     if app and main_window:
         # Move window off-screen but keep it focused - more aggressive attempt
-        log_message("Initial connection successful, now moving window off-screen")
-        
-        # Ensure we have focus before trying to move it
-        main_window.set_focus()
-        time.sleep(1)
-        
-        #if not move_window_offscreen(main_window):
-        #    log_message("WARNING: Failed to move window off-screen, continuing anyway")
-            
         # Start monitoring after initial connection
         monitor_vpn_connection(app, main_window)
     else:
